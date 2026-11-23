@@ -1,0 +1,79 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Everything in the repository is published except these rsync patterns,
+  # one per line. A leading / matches from the repository root only. A line
+  # starting "+ " publishes a file the patterns after it would exclude.
+  DENY: |
+    + /commissioning/vendor/LICENSES.md
+    /.git/
+    /.github/
+    /build/
+    /ci/
+    /tests/
+    /docs/
+    /ui/
+    /pages/
+    /schema.toml
+    /urls.toml
+    /.gitignore
+    /LICENCE
+    /js/js-version
+    *.md
+    .DS_Store
+    __pycache__/
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate js/urls.js, js/schema.js, js/messages.js and commissioning/tool.css
+        run: |
+          NODE_BIN="$(ci/install-node.sh)"
+          PYTHON_BIN="$(ci/install-python.sh)"
+          export PATH="${NODE_BIN}:${PATH}"
+          PYTHON="${PYTHON_BIN}/python3"
+          "${PYTHON}" ci/urls.py write
+          "${PYTHON}" ci/schema.py write site
+          node ci/tool-css.mjs
+
+      - name: Assemble the published files
+        run: |
+          rm -rf pages
+          rsync -a --exclude-from=<(printf '%s\n' "${DENY}") ./ pages/
+
+      - name: Check every local reference resolves in the published files
+        run: |
+          NODE_BIN="$(ci/install-node.sh)"
+          export PATH="${NODE_BIN}:${PATH}"
+          node ci/check-pages.mjs pages
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

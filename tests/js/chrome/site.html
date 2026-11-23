@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<!-- A page on onerom.org that programs a target through Airfrog's window. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Bridge test</title></head>
+<body>
+<script type="module">
+    import { Picoboot } from 'https://picoflash.org/releases/v0.2.0/pkg/index.js';
+
+    // The client library, through the Airfrog manifest as a website loads it
+    const airfrogManifest = await fetch('https://meta.piers.rocks/airfrog/manifest.json').then(r => r.json());
+    const { Airfrog } = await import(new URL('v0.1.0/airfrog.js', airfrogManifest.js_library));
+    const client = await import(new URL('v0.1.0/airfrog.js', airfrogManifest.js_library));
+    const { AirfrogTarget } = await import('https://picoflash.org/releases/v0.2.0/pkg/airfrog-transport.js');
+
+    window.closes = [];
+    window.test = {
+        // Call from a click
+        connect(host) {
+            window.connecting = Airfrog.connectBridge(host).then(a => {
+                window.airfrog = a;
+                a.addEventListener('close', e => window.closes.push(e.detail.message));
+                return 'connected';
+            }, e => `${e.code}: ${e.message}`);
+            return 'opening';
+        },
+        async program(addr, size) {
+            const data = Uint8Array.from({ length: size }, () => Math.random() * 256 | 0);
+            const picoboot = Picoboot.fromTransport(new AirfrogTarget(window.airfrog, client));
+            let t = performance.now();
+            await picoboot.flashEraseAndWrite(addr, data);
+            const writeMs = performance.now() - t;
+            t = performance.now();
+            const back = await picoboot.flashRead(addr, size);
+            const readMs = performance.now() - t;
+            return { match: back.every((b, i) => b === data[i]), writeMs: Math.round(writeMs), readMs: Math.round(readMs) };
+        },
+    };
+    window.ready = true;
+</script>
+</body>
+</html>

@@ -1,0 +1,2438 @@
+# Copyright (C) 2026 Piers Finlayson <piers@piers.rocks>
+#
+# MIT License
+
+# Airfrog's schema
+#
+# The source of AWP's constants and layouts, the page texts and Airfrog's
+# project name. AWP is specified in airfrog-v2/docs/websocket-protocol.md.
+# ci/schema.py generates from it:
+# - airfrog-site's js/schema.js: constants and each layout's encoder and
+#   decoder
+# - airfrog-site's js/messages.js: the page texts
+# - airfrog-v2's components/protocol/airfrog_awp.h, the public AWP header:
+#   constants and layout offsets
+# - airfrog-v2's components/protocol/airfrog_image.h: the constants of
+#   Airfrog's firmware images
+# - airfrog-v2's rust/airfrog-ext-api/src/awp.rs: constants, a type for each
+#   enum and layout offsets
+# - airfrog-v2's rust/airfrog-client/src/schema.rs: constants, the types
+#   airfrog-client exports, layout offsets and AirfrogError's texts
+# - airfrog-v2's ci/awp.py: constants and layout offsets
+# - airfrog-v2's rust/picoboot-airfrog/src/text.rs: its error texts
+# - airfrog-v2's apps/airfrog/schema.cmake: the project name
+# - airfrog-v2's apps/airfrog/main/page-texts.js: Airfrog's home page's texts
+# - airfrog-v2's components/protocol/airfrog_recovery.h: [recovery_constants]
+# - airfrog-v2's rust/airfrog-cli/src/schema.rs: the firmware image
+#   constants, the released models, the chips, the target firmware names,
+#   the manifest key from commissioning/manifest-key.js, [client_constants],
+#   [recovery_constants] and [cli_output]
+# - airfrog-v2's rust/airfrog-signing-server/src/models.rs:
+#   manifest_version and the firmware manifests' keys
+#
+# `ci/schema.py check v2` also fails when websocket-protocol.md's message,
+# command, ERROR code, firmware ID, close code, service, operation or layout
+# tables differ from the schema, or when recovery-protocol.md's request header
+# and result tables, or ac5-design.md's One ROM flash and settings block
+# tables, differ from [recovery_constants].
+#
+# After a change here, use `ci/schema.py write site` and
+# `ci/schema.py write v2 ../airfrog-v2`.
+#
+# ---------------------------------------------------------------------------
+# Names
+# ---------------------------------------------------------------------------
+# Each entry's key is its name. The C name has the prefix AF_, the Rust, JS
+# and Python names don't. An entry's `c`, `rust`, `js` or `py` is its name in
+# that language in place of the default, or false to leave it out of that
+# language. Python has a const each, with the enum's prefix.
+#
+# ---------------------------------------------------------------------------
+# [constants]
+# ---------------------------------------------------------------------------
+#   value    - a number or a string
+#   type     - the Rust type: u8, u16, u32, usize or str
+#   hex      - written in hex
+#   comment  - the comment in each language
+#   image    - true for a constant of Airfrog's firmware images, which isn't
+#              AWP's. It is in airfrog_image.h in place of airfrog_awp.h, in
+#              airfrog-cli, and not in airfrog-ext-api.
+#
+# ---------------------------------------------------------------------------
+# [client_constants]
+# ---------------------------------------------------------------------------
+# Values of Airfrog's pages and CLI that aren't AWP's, with [constants]'s
+# value, type and comment. JS's schema.js, Airfrog's home page's texts and
+# airfrog-cli's schema.rs have them.
+#
+# ---------------------------------------------------------------------------
+# [enums.NAME]
+# ---------------------------------------------------------------------------
+#   prefix   - the prefix of each value's name in airfrog-client's schema
+#              module, JS's exported consts and Python
+#   c_prefix - the prefix of each value's name in C, after AF_. No enum's
+#              c_prefix is the start of another's.
+#   c_enum   - true for a C typedef enum. Its name is af_, then c_prefix in
+#              lower case without its last _, then _t.
+#              Without it, a #define each.
+#   type     - the values' type in Rust and JS. airfrog-ext-api has a tuple
+#              struct of this name with an associated const each, ALL and
+#              name().
+#   rust     - Rust: { type } is the integer in `type`'s struct, u16 without
+#              it. airfrog-client has a const each in its schema module, or
+#              with { public = true } exports the same struct as
+#              airfrog-ext-api.
+#   js       - JS: { object = true } for a frozen object named `type`.
+#              Without it, an exported const each. { list } also exports a
+#              frozen array of every value with that name, and { names } a
+#              function with that name that returns a value's name.
+#   hex      - values written in hex
+#   values   - each value's `value`, or `bit` for 1 << bit, and `comment`.
+#              A close code's `doc` is its name in the spec's table, when it
+#              isn't its key in words.
+#
+# ---------------------------------------------------------------------------
+# [layouts.NAME]
+# ---------------------------------------------------------------------------
+# A message's or entry's fields in order, without padding, little-endian. A
+# layout's fixed part ends at its first field without a fixed size. C, Rust
+# and JS get NAME_FIELD_OFFSET for each named field in the fixed part. When
+# the fixed part isn't empty they also get NAME_LEN, its length, or NAME_HEAD
+# when other fields follow. `len` or `head` is that constant's name in place
+# of the default, and `prefix` is NAME in every language. JS also gets
+# encodeNAME() and decodeNAME() with NAME in CamelCase. A reserved field is
+# named only for its offset. JS's codec skips it.
+#
+# `doc` is the spec's heading above the layout's table, and `doc_table` the
+# table's number under it, 1 by default. `doc = false` for a layout without a
+# table.
+#
+# Field types:
+#   u8, i8, u16, u32, u64
+#   bytes     - `size` bytes. `size` is a number or a constant's name.
+#   padded    - ASCII text padded with zero bytes to `size` bytes
+#   reserved  - `size` bytes sent as 0
+#   text      - a 2-byte length, then that many bytes of UTF-8
+#   layout    - the `entry` layout
+#   variable  - a 2-byte length, then that many bytes of `entry` layouts
+#   list      - `count` entries, where `count` is an earlier field. Each entry
+#               is the `entry` layout, or a `text`, `u16` or `u32` field.
+#   rest      - bytes to the end of the message
+#
+# `optional` on a layout's last fields: decode() reads them as null, or skips
+# a reserved field, when the message ends before them.
+#
+# `max` on a u8, u16 or u32 field: JS also gets NAME_FIELD_MAX, its largest
+# value.
+#
+# ---------------------------------------------------------------------------
+# [services.NAME]
+# ---------------------------------------------------------------------------
+# The service IDs are an enum, with [enums.NAME]'s keys. `operation_type`
+# is the operation IDs' type in Rust and JS. `messages_comment` is the
+# comment above js/messages.js's SERVICES. Each service has:
+#   value        - the service ID
+#   description  - js/messages.js's description
+#   operations   - each operation's ID: AF_OP_SERVICE_NAME in C and
+#                  SERVICE_NAME in Rust's and JS's operation type. `all` is
+#                  ALL, every operation of a service.
+#
+# ---------------------------------------------------------------------------
+# [target_mcus.NAME]
+# ---------------------------------------------------------------------------
+# Each target MCU Airfrog's rules identify, by TARGET's targetid: its designer,
+# bits 1 to 11, and its part, bits 12 to 27. NAME is the MCU's name. JS gets
+# TARGET_MCUS.
+#   designer - the designer
+#   parts    - each part
+#
+# ---------------------------------------------------------------------------
+# [chips.NAME]
+# ---------------------------------------------------------------------------
+# Each ESP32 an Airfrog model is built on. JS gets CHIPS, Python CHIPS and
+# CHIP_NAMES.
+#   value   - GET_HW_INFO's chip, the chip ID in an ESP-IDF image header
+#   name    - the MCU's name
+#   target  - ESP-IDF's target
+#   psram   - true for an MCU that may have PSRAM
+#
+# ---------------------------------------------------------------------------
+# [[cli_targets]]
+# ---------------------------------------------------------------------------
+# Each architecture the Airfrog CLI is released for, in the order airfrog.org/cli
+# displays them. JS gets CLI_TARGETS, Rust CLI_TARGETS, and
+# ci/release-cli.py reads them.
+#   target    - the Rust target, its key in the CLI manifest. macOS's file runs
+#               on both of its architectures
+#   platform  - the name airfrog.org/cli displays
+#   os        - Rust's std::env::consts::OS
+#   arch      - Rust's std::env::consts::ARCH, "" for any
+#   files     - the words that identify a file, each a list whose first item
+#               is the extension
+#
+# ---------------------------------------------------------------------------
+# [[models]]
+# ---------------------------------------------------------------------------
+# Each Airfrog model. GET_HW_INFO reports a model's number, and each
+# firmware image contains it at IMAGE_MODEL_OFFSET. The firmware is built
+# for a model, on its chip's ESP-IDF target.
+#   value     - the model's number
+#   name      - its name, displayed as written: words of letters and digits
+#               between single spaces, the first starting with a letter, for
+#               example "Mini v2"
+#   chip      - its [chips] entry
+#   released  - false until the model is released. An unreleased model's
+#               name is written only here and in what the firmware build
+#               generates from it. js/schema.js has its number and chip,
+#               and airfrog-cli's schema.rs its number. Rust's model names
+#               and the release scripts leave it out, and
+#               `ci/schema.py check names` fails when a file contains it
+#               after "airfrog" and a hyphen, underscore or space.
+#
+# A model's key is its name in lower case with each space a hyphen
+# (mini-v2). It is the model's key in the firmware manifest, in its release
+# files' names and its build directories, and the build scripts' argument.
+# Its constants are its name in upper case with each space an underscore
+# (MINI_V2). ci/schema.py derives both. `ci/schema.py model KEY` provides a
+# model's details to the build.
+#
+# ---------------------------------------------------------------------------
+# [messages.NAME]
+# ---------------------------------------------------------------------------
+# js/messages.js, in this order. A message is a `text`, or `entries`, an
+# object of texts.
+#   comment    - the comment above it
+#   export     - false for a text only other texts refer to
+#   keys       - "errors": each entry's key is an ERROR code's name, written
+#                as its number
+#   functions  - every entry is a function
+#   page       - its entries are also on Airfrog's home page, index.html, which
+#                the firmware build writes them into as @PAGE_TEXTS@. Texts
+#                and args only.
+#
+# A text is a string, or a table of:
+#   text       - the string
+#   args       - the function's arguments. A text with args is a function.
+#   linked     - the function returns a LinkedText, with the link at {url}
+#   cases      - texts in place of `text` for the first argument: `is` a
+#                number, `absent` when null or undefined, `falsy` when false,
+#                0, empty, null or undefined. `text` is the last case.
+#   lookup     - a message with `keys`. Its entry for the first argument, when
+#                it has one, in place of `text`.
+#   comment    - the comment above it
+# {NAME} in a string is an argument, another message, for example
+# {CLOSED.PASSWORD_CHANGED}, or a constant's value.
+#
+# `rust = true` on a message also generates its entries in schema.rs's `text`
+# module, a const for a text without arguments, otherwise a function.
+# `rust = "picoboot-airfrog"` generates them in that crate's src/text.rs.
+# `rust_args` are the function's argument types. [rust_texts] are texts only
+# airfrog-client displays, in the same form.
+#
+# ---------------------------------------------------------------------------
+# [recovery_constants]
+# ---------------------------------------------------------------------------
+# Values of the recovery protocol and One ROM's recovery and serial firmware,
+# and the support firmware manifest's keys, in airfrog-cli's schema.rs as its
+# recovery module and in airfrog_recovery.h with the prefix AF_RECOVERY_, with
+# [constants]'s value, type, hex and comment. `c = false` leaves one out of
+# airfrog_recovery.h. `support_firmware = true` marks a key of the support
+# firmware manifest.
+#
+# ---------------------------------------------------------------------------
+# [cli_output.GROUP]
+# ---------------------------------------------------------------------------
+# The airfrog CLI's output, in airfrog-cli's schema.rs as text::group, one
+# module a group. Each entry has [messages]'s form, with rust_args.
+
+project = "airfrog"
+# The version of every Airfrog manifest's schema, its `version`. It is raised
+# only by a breaking change. ci/signing.py and the signing server use it.
+manifest_version = 1
+
+[constants]
+REVISION = { value = 1, type = "u16", comment = "The AWP revision Airfrog implements." }
+SUBPROTOCOL = { value = "airfrog-v1", type = "str", comment = "The WebSocket subprotocol." }
+PATH = { value = "/api/ws", type = "str", c = "AF_WS_PATH", comment = "The WebSocket's path." }
+NONCE_LEN = { value = 16, type = "usize", comment = "ns and nc." }
+KEY_LEN = { value = 32, type = "usize", comment = "K, the password's key." }
+SALT_LEN = { value = 16, type = "usize" }
+PROOF_LEN = { value = 32, type = "usize", comment = "LOGIN's proof." }
+HMAC_LEN = { value = 32, type = "usize", c = false }
+LOGIN_LABEL = { value = "login", type = "str", comment = "The label of the client's proof in LOGIN." }
+PROOF_LABEL = { value = "airfrog", type = "str", comment = "The label of Airfrog's proof in LOGIN's response." }
+SESSION_LABEL = { value = "session", type = "str", comment = "The label of S, the connection's key." }
+DIRECTION_CLIENT = { value = 0x00, type = "u8", hex = true, rust = "FROM_CLIENT", comment = "The hmac's direction byte on a message from the client." }
+DIRECTION_AIRFROG = { value = 0x01, type = "u8", hex = true, rust = "FROM_AIRFROG", comment = "The hmac's direction byte on a message from Airfrog." }
+PICOBOOT_PACKET_LEN = { value = 32, type = "usize", comment = "A PICOBOOT command packet." }
+PICOBOOT_STATUS_LEN = { value = 16, type = "usize", comment = "PICOBOOT's command status." }
+RBCP_HEADER_LEN = { value = 8, type = "usize", comment = "An RBCP response header." }
+PIN_NAME_LEN = { value = 8, type = "usize", comment = "A pin field." }
+SERIAL_NUMBER_LEN = { value = 16, type = "usize", comment = "GET_HW_INFO's serial number." }
+IMAGE_MODEL_OFFSET = { value = 288, type = "usize", image = true, rust = false, comment = "The offset of a firmware image's model number, a u16 after esp_app_desc_t." }
+SSID_MAX = { value = 32, type = "usize" }
+WIFI_PASSWORD_MIN = { value = 8, type = "usize" }
+WIFI_PASSWORD_MAX = { value = 63, type = "usize" }
+HOSTNAME_MAX = { value = 63, type = "usize" }
+HOST_ALIASES_MAX = { value = 4, type = "usize" }
+HOST_ALIAS_MAX = { value = 253, type = "usize" }
+LABEL_MAX = { value = 63, type = "usize", comment = "A label of a host alias." }
+AUTHORISED_WEBSITES_MAX = { value = 8, type = "usize" }
+AUTHORISED_WEBSITE_MAX = { value = 267, type = "usize", comment = "https://, a host of HOST_ALIAS_MAX bytes and :65535." }
+BOOT_WINDOW_MAX_MS = { value = 10000, type = "u16" }
+BOOT_WINDOW_AUTO = { value = 0xFFFF, type = "u16", hex = true, comment = "SET_SETTINGS's boot window for the longest of any supported firmware." }
+RESCAN_MIN_S = { value = 60, type = "u32", comment = "The shortest rescan interval other than 0, which turns rescans off." }
+RESCAN_DEFAULT_S = { value = 3600, type = "u32" }
+RESCAN_DB_MAX = { value = 100, type = "u16" }
+RESCAN_DEFAULT_DB = { value = 10, type = "u16" }
+RESTART_TIMEOUT_DEFAULT_MS = { value = 60000, type = "u32", comment = "A graceful RESTART's timeout_ms when it is 0." }
+RESTART_TIMEOUT_MAX_MS = { value = 600000, type = "u32" }
+SCAN_MAX = { value = 20, type = "usize", comment = "The most networks WIFI_SCAN lists." }
+SERIAL_PREFIX = { value = "@af ", type = "str", comment = "The start of a message line over serial." }
+SERIAL_LINE_MAX = { value = 8192, type = "usize", comment = "The longest line Airfrog reads over serial." }
+CLAIM_MS = { value = 10000, type = "u32", comment = "The claim ends this long after the response to its holder's last CLAIM, IDENTIFY or TARGET_CMD." }
+MAX_TRANSFER_MIN = { value = 4096, type = "usize", comment = "The smallest HELLO max_transfer, and the most data in EXT_CMD and EXT_NOTIFY." }
+EXT_IMAGE_MAGIC = { value = "AFXI", type = "str", comment = "The start of an extension image." }
+EXTENSIONS_MAX = { value = 16, type = "usize", comment = "Installed extensions." }
+EXT_NAME_MAX = { value = 32, type = "usize", comment = "An extension name." }
+EXT_METADATA_MAX = { value = 2048, type = "usize", comment = "An extension's metadata." }
+EXT_INSTALL_MS = { value = 10000, type = "u32", comment = "An extension install ends this long after its last EXT_BEGIN or EXT_WRITE." }
+
+[client_constants]
+DOWNLOAD_TIMEOUT_MS = { value = 15000, type = "u64", comment = "A download that receives nothing for this long fails." }
+
+[enums.type]
+comment = "Message types."
+c_prefix = "MSG_"
+c_enum = true
+hex = true
+rust = { type = "u16" }
+type = "MessageType"
+js = { list = "MESSAGE_TYPES", names = "messageTypeName" }
+[enums.type.values]
+HELLO = { value = 0x01 }
+LOGIN = { value = 0x02 }
+TARGET = { value = 0x03 }
+ERROR = { value = 0x04 }
+IDENTIFY = { value = 0x05 }
+AIRFROG_CMD = { value = 0x10 }
+CLAIM = { value = 0x20 }
+RELEASE = { value = 0x21 }
+TARGET_CMD = { value = 0x22 }
+EXT_CMD = { value = 0x30 }
+EXT_NOTIFY = { value = 0x31 }
+
+[enums.header_flag]
+comment = "The header's flags."
+prefix = "HEADER_"
+c_prefix = "HEADER_FLAG_"
+rust = { type = "u16" }
+type = "HeaderFlag"
+hex = true
+[enums.header_flag.values]
+RESPONSE = { bit = 0, comment = "Set by Airfrog on every response." }
+
+[enums.error]
+comment = "ERROR's codes."
+prefix = "ERROR_"
+c_prefix = "ERR_"
+c_enum = true
+rust = { type = "u16" }
+type = "ErrorCode"
+[enums.error.values]
+BUSY = { value = 1 }
+NOT_CLAIMED = { value = 2 }
+NOT_OFFERED = { value = 3 }
+TRANSFER_FAILED = { value = 4 }
+NOT_RUNNING = { value = 5 }
+MEMORY_FAULT = { value = 6 }
+OUT_OF_RANGE = { value = 7 }
+INTERNAL_ERROR = { value = 8 }
+UPDATE_IN_PROGRESS = { value = 9 }
+INSTALL_IN_PROGRESS = { value = 10 }
+EXTENSION_INVALID = { value = 11 }
+EXTENSION_UNSUPPORTED = { value = 12 }
+NO_SPACE = { value = 13 }
+IMAGE_INVALID = { value = 16 }
+RESTARTING = { value = 17 }
+EXISTS = { value = 18 }
+NO_ENTRY = { value = 19 }
+
+[enums.close]
+comment = "Close codes."
+prefix = "CLOSE_"
+c_prefix = "CLOSE_"
+c_enum = true
+rust = { type = "u16" }
+type = "CloseCode"
+[enums.close.values]
+GOING_AWAY = { value = 1001, comment = "WebSocket's going away, when Airfrog restarts or a client is silent." }
+PROTOCOL_ERROR = { value = 4000 }
+BAD_COUNTER_OR_HMAC = { value = 4001 }
+LOGIN_FAILED = { value = 4002 }
+PASSWORD_CHANGED = { value = 4003 }
+TOO_MANY_CONNECTIONS = { value = 4004 }
+LOGIN_TIMEOUT = { value = 4005 }
+NETWORK_SETTINGS_CHANGED = { value = 4006 }
+LOGIN_BLOCKED = { value = 4007, doc = "Too many failed logins" }
+
+[enums.command]
+comment = "AIRFROG_CMD's commands."
+prefix = "CMD_"
+c_prefix = "CMD_"
+c_enum = true
+hex = true
+rust = { type = "u16" }
+type = "Command"
+js = { object = true }
+[enums.command.values]
+GET_HW_INFO = { value = 0x01 }
+GET_FW_INFO = { value = 0x02 }
+GET_WIFI_STA = { value = 0x03 }
+GET_WIFI_AP = { value = 0x04 }
+SET_WIFI_STA = { value = 0x05 }
+SET_PASSWORD = { value = 0x06 }
+GET_HOSTNAME = { value = 0x07 }
+SET_HOSTNAME = { value = 0x08 }
+GET_HOST_ALIASES = { value = 0x09 }
+SET_HOST_ALIASES = { value = 0x0A }
+GET_PIN_MAP = { value = 0x0B }
+GET_SETTINGS = { value = 0x0C }
+SET_SETTINGS = { value = 0x0D }
+OTA_BEGIN = { value = 0x0E }
+OTA_WRITE = { value = 0x0F }
+OTA_FINISH = { value = 0x10 }
+OTA_CONFIRM = { value = 0x11 }
+WIFI_SCAN = { value = 0x12 }
+WIFI_AP_STOP = { value = 0x13 }
+RESTART = { value = 0x14 }
+RESTART_CANCEL = { value = 0x15 }
+GET_BOARDS = { value = 0x16 }
+GET_EXTENSIONS = { value = 0x17 }
+EXT_BEGIN = { value = 0x18 }
+EXT_WRITE = { value = 0x19 }
+EXT_FINISH = { value = 0x1A }
+EXT_REMOVE = { value = 0x1B }
+SET_EXTENSIONS = { value = 0x1C }
+GET_EXTENSION_METADATA = { value = 0x1D }
+GET_AUTHORISED_WEBSITES = { value = 0x1E }
+SET_AUTHORISED_WEBSITES = { value = 0x1F }
+ADD_AUTHORISED_WEBSITE = { value = 0x20 }
+REMOVE_AUTHORISED_WEBSITE = { value = 0x21 }
+ADD_HOST_ALIAS = { value = 0x22 }
+REMOVE_HOST_ALIAS = { value = 0x23 }
+
+[enums.hello_flag]
+comment = "HELLO's flags."
+prefix = "HELLO_"
+c_prefix = "HELLO_FLAG_"
+rust = { type = "u16" }
+type = "HelloFlag"
+hex = true
+[enums.hello_flag.values]
+PASSWORD = { bit = 0, rust = "FLAG_PASSWORD", js = "FLAG_PASSWORD", comment = "Airfrog has a password." }
+
+[enums.state]
+comment = "TARGET's states."
+prefix = "STATE_"
+c_prefix = "TARGET_STATE_"
+c_enum = true
+rust = { public = true }
+type = "TargetState"
+[enums.state.values]
+IDENTIFYING = { value = 0, comment = "From a detected target reset, a RESET operation or an IDENTIFY until identification completes." }
+IDENTIFIED = { value = 1 }
+
+[enums.swd]
+comment = "TARGET's swd bits."
+prefix = "SWD_"
+c_prefix = "TARGET_SWD_"
+rust = { type = "u16" }
+type = "TargetSwd"
+hex = true
+[enums.swd.values]
+CHECKED = { bit = 0, comment = "SWD was tried." }
+RESPONDED = { bit = 1, comment = "Debug port responded." }
+DEBUG_ENABLED = { bit = 2, comment = "Memory access port has debug enabled." }
+MEMORY = { bit = 3, comment = "SWD can access memory." }
+SECURE_STATE = { bit = 4, comment = "Core has Secure state." }
+SECURE_ACCESS = { bit = 5, comment = "SWD can make Secure accesses." }
+
+[enums.fw_flag]
+comment = "TARGET's fw_flags."
+prefix = "FW_FLAG_"
+c_prefix = "TARGET_FW_FLAG_"
+rust = { type = "u16" }
+type = "TargetFwFlag"
+hex = true
+[enums.fw_flag.values]
+RUNNING = { bit = 0, comment = "Airfrog has confirmed the firmware is running." }
+
+# `text` is the firmware's name in js/messages.js's FIRMWARE and the spec's
+# firmware ID table.
+[enums.firmware]
+comment = "Firmware IDs in TARGET and IDENTIFY."
+prefix = "FW_"
+c_prefix = "FIRMWARE_"
+c_enum = true
+rust = { type = "u32", public = true }
+type = "Firmware"
+js = { object = true }
+[enums.firmware.values]
+NONE = { value = 0 }
+ONE_ROM = { value = 1, text = "One ROM" }
+ONE_ROM_LAB = { value = 2, text = "One ROM Lab" }
+
+[enums.identify_flag]
+comment = "IDENTIFY's flags."
+prefix = "IDENTIFY_"
+c_prefix = "IDENTIFY_FLAG_"
+rust = { public = true }
+type = "IdentifyFlag"
+js = { object = true }
+hex = true
+[enums.identify_flag.values]
+NO_SWD = { bit = 0, comment = "Don't use SWD." }
+NO_FIRMWARE_PROTOCOL = { bit = 1, comment = "Don't use a firmware's own protocol, except to check the listed firmware." }
+
+[enums.identify_result]
+comment = "IDENTIFY's results."
+prefix = "IDENTIFY_"
+c_prefix = "IDENTIFY_RESULT_"
+c_enum = true
+rust = { public = true }
+type = "IdentifyResult"
+js = { object = true }
+[enums.identify_result.values]
+NOT_CHECKED = { value = 0, comment = "Not checked, because an earlier firmware matched." }
+MATCHED = { value = 1 }
+NO_RESPONSE = { value = 2 }
+OTHER = { value = 3, comment = "A different response." }
+
+[enums.sta_state]
+comment = "GET_WIFI_STA's states."
+prefix = "STA_"
+c_prefix = "STA_STATE_"
+c_enum = true
+rust = { type = "u16" }
+type = "StaState"
+js = { object = true }
+[enums.sta_state.values]
+DISABLED = { value = 0 }
+CONNECTING = { value = 1 }
+CONNECTED = { value = 2 }
+FAILED = { value = 3 }
+
+[enums.sta_reason]
+comment = "GET_WIFI_STA's reasons a join failed."
+prefix = "STA_REASON_"
+c_prefix = "STA_REASON_"
+c_enum = true
+rust = { type = "u16" }
+type = "StaReason"
+js = { object = true }
+[enums.sta_reason.values]
+NETWORK_NOT_FOUND = { value = 1 }
+WRONG_PASSWORD = { value = 2 }
+OTHER = { value = 3 }
+
+[enums.sta_flag]
+comment = "GET_WIFI_STA's flags."
+prefix = "STA_"
+c_prefix = "STA_FLAG_"
+rust = { type = "u16" }
+type = "StaFlag"
+js = { object = true }
+hex = true
+[enums.sta_flag.values]
+PASSWORD = { bit = 0 }
+
+[enums.ipv4_mode]
+comment = "IPv4 modes."
+prefix = "IPV4_"
+c_prefix = "IPV4_MODE_"
+c_enum = true
+rust = { type = "u16" }
+type = "Ipv4Mode"
+js = { object = true }
+[enums.ipv4_mode.values]
+DHCP = { value = 0 }
+STATIC = { value = 1 }
+
+[enums.set_sta_flag]
+comment = "SET_WIFI_STA's flags."
+prefix = "SET_STA_"
+c_prefix = "SET_STA_FLAG_"
+rust = { type = "u16" }
+type = "SetStaFlag"
+js = { object = true }
+hex = true
+[enums.set_sta_flag.values]
+KEEP_PASSWORD = { bit = 0 }
+
+[enums.ap_state]
+comment = "GET_WIFI_AP's states."
+prefix = "AP_"
+c_prefix = "AP_STATE_"
+rust = { type = "u16" }
+type = "ApState"
+[enums.ap_state.values]
+OFF = { value = 0 }
+ON = { value = 1 }
+
+[enums.role]
+comment = "GET_PIN_MAP's roles."
+prefix = "ROLE_"
+c_prefix = "PIN_ROLE_"
+rust = { type = "u16" }
+type = "PinRole"
+js = { object = true }
+[enums.role.values]
+NONE = { value = 0 }
+RESET = { value = 1 }
+BOOT = { value = 2 }
+
+[enums.level]
+comment = "A pin's level."
+prefix = "LEVEL_"
+c_prefix = "PIN_LEVEL_"
+c_enum = true
+rust = { public = true }
+type = "PinLevel"
+js = { object = true }
+[enums.level.values]
+RELEASED = { value = 0, js = false, comment = "Not driven by Airfrog." }
+LOW = { value = 1 }
+HIGH = { value = 2 }
+
+[enums.setting]
+comment = "GET_SETTINGS and SET_SETTINGS's flags."
+prefix = "SETTING_"
+c_prefix = "SETTINGS_FLAG_"
+rust = { type = "u16" }
+type = "SettingsFlag"
+js = { object = true }
+hex = true
+[enums.setting.values]
+RECOVERY = { bit = 0 }
+WIFI_POWER_SAVE = { bit = 1 }
+
+[enums.scan_flag]
+comment = "WIFI_SCAN's flags."
+prefix = "SCAN_"
+c_prefix = "SCAN_FLAG_"
+rust = { type = "u16" }
+type = "ScanFlag"
+hex = true
+[enums.scan_flag.values]
+START = { bit = 0, comment = "Start a scan, unless one is running." }
+
+[enums.scan_state]
+comment = "WIFI_SCAN's states."
+prefix = "SCAN_"
+c_prefix = "SCAN_STATE_"
+c_enum = true
+rust = { type = "u16" }
+type = "ScanState"
+js = { object = true }
+[enums.scan_state.values]
+NONE = { value = 0 }
+SCANNING = { value = 1 }
+DONE = { value = 2 }
+FAILED = { value = 3 }
+
+[enums.security]
+comment = "WIFI_SCAN's network security."
+prefix = "SECURITY_"
+c_prefix = "SCAN_SECURITY_"
+c_enum = true
+rust = { type = "u8" }
+type = "ScanSecurity"
+js = { object = true }
+[enums.security.values]
+OPEN = { value = 0 }
+PASSWORD = { value = 1 }
+UNSUPPORTED = { value = 2 }
+
+[enums.restart]
+comment = "RESTART's modes."
+prefix = "RESTART_"
+c_prefix = "RESTART_MODE_"
+rust = { type = "u16" }
+type = "RestartMode"
+js = { object = true }
+[enums.restart.values]
+GRACEFUL = { value = 0 }
+IMMEDIATE = { value = 1 }
+
+[enums.read_flag]
+comment = "SWD_MEMORY's flags."
+prefix = "READ_"
+c_prefix = "READ_FLAG_"
+rust = { type = "u16" }
+type = "ReadFlag"
+hex = true
+[enums.read_flag.values]
+NON_SECURE = { bit = 0, comment = "Make Non-secure accesses." }
+
+[enums.ext_flag]
+comment = "GET_EXTENSIONS's and EXT_BEGIN's flags."
+prefix = "EXT_"
+c_prefix = "EXT_FLAG_"
+rust = { type = "u16" }
+type = "ExtensionFlag"
+js = { object = true }
+hex = true
+[enums.ext_flag.values]
+TAB = { bit = 0, comment = "The extension's Tab checkbox is ticked." }
+SIDE_LOADED = { bit = 1, comment = "Installed from a file, not the repository." }
+
+[enums.set_ext_flag]
+comment = "SET_EXTENSIONS's flags. Other bits fail with OUT_OF_RANGE."
+prefix = "SET_EXT_"
+c_prefix = "SET_EXT_FLAG_"
+rust = { type = "u16" }
+type = "SetExtensionFlag"
+js = { object = true }
+hex = true
+[enums.set_ext_flag.values]
+TAB = { bit = 0, comment = "The extension's Tab checkbox is ticked." }
+
+[enums.wasm_state]
+comment = "GET_EXTENSIONS's WASM module states."
+prefix = "WASM_"
+c_prefix = "WASM_STATE_"
+c_enum = true
+rust = { type = "u16" }
+type = "WasmState"
+js = { object = true }
+[enums.wasm_state.values]
+NO_MODULE = { value = 0 }
+RUNNING = { value = 1 }
+STOPPED = { value = 2 }
+NOT_STARTED = { value = 3 }
+
+[enums.wasm_reason]
+comment = "GET_EXTENSIONS's reasons a WASM module is stopped or not started."
+prefix = "WASM_REASON_"
+c_prefix = "WASM_REASON_"
+c_enum = true
+rust = { type = "u16" }
+type = "WasmReason"
+js = { object = true }
+[enums.wasm_reason.values]
+NONE = { value = 0 }
+RAN_TOO_LONG = { value = 1 }
+CRASHED = { value = 2 }
+NOT_ENOUGH_MEMORY = { value = 3 }
+OTHER_WAMR_VERSION = { value = 4, comment = "Built for another WAMR version." }
+STOPPED_BY_EXTENSION = { value = 5 }
+INCOMPATIBLE_FIRMWARE = { value = 6, comment = "Incompatible with this Airfrog firmware version." }
+RECOVERY_BOOT = { value = 7, comment = "Recovery boot." }
+
+[services]
+comment = "Service IDs."
+messages_comment = "Services by their AWP service number: their AWP names, operations and descriptions."
+prefix = "SVC_"
+c_prefix = "SVC_"
+c_enum = true
+rust = { public = true }
+type = "Service"
+operation_type = "Operation"
+js = { object = true }
+all = 0
+
+[services.RESET]
+value = 1
+operations = { RESET = 1, RESET_BOOT = 2, RESET_PINS = 3 }
+description = "Resets the target using Airfrog's GPIOs."
+
+[services.SWD_MEMORY]
+value = 2
+operations = { READ = 1, WRITE = 2 }
+description = "SWD access to the target's memory."
+
+[services.PICOBOOT_RP2350_SWD]
+value = 3
+operations = { COMMAND = 1, INTERFACE_RESET = 2 }
+
+[services.PICOBOOT_ORICP]
+value = 4
+operations = { COMMAND = 1, INTERFACE_RESET = 2 }
+description = "Controls the target using PICOBOOT over I2C."
+
+[services.RBCP_ORICP]
+value = 5
+operations = { FRAME = 1 }
+description = "Controls the target using RBCP over I2C."
+
+[services.GPIO]
+value = 6
+operations = { SET = 1, GET = 2 }
+description = "Controls Airfrog's GPIOs."
+
+[services.PICOBOOT_RP2040_SWD]
+value = 7
+operations = { COMMAND = 1, INTERFACE_RESET = 2 }
+
+[layouts.HEADER]
+doc = "## Framing"
+comment = "Every message's header, followed by the payload."
+prefix = ""
+head = "HEADER_LEN"
+fields = [
+    { name = "type", type = "u16" },
+    { name = "flags", type = "u16" },
+    { type = "reserved", size = 4 },
+    { name = "counter", type = "u64" },
+    { name = "hmac", type = "bytes", size = 32 },
+    { name = "payload", type = "rest" },
+]
+
+[layouts.HELLO]
+doc = "### HELLO"
+fields = [
+    { name = "revision", type = "u16" },
+    { name = "flags", type = "u16" },
+    { name = "max_transfer", type = "u32" },
+    { name = "ns", type = "bytes", size = "NONCE_LEN" },
+    { name = "salt", type = "bytes", size = "SALT_LEN" },
+    { name = "iterations", type = "u32" },
+]
+
+[layouts.LOGIN]
+doc = "### LOGIN"
+fields = [
+    { name = "nc", type = "bytes", size = "NONCE_LEN" },
+    { name = "proof", type = "bytes", size = "PROOF_LEN" },
+]
+
+[layouts.LOGIN_RESPONSE]
+doc = "### LOGIN"
+doc_table = 2
+fields = [
+    { name = "proof", type = "bytes", size = "PROOF_LEN" },
+]
+
+[layouts.TARGET]
+doc = "### TARGET"
+fields = [
+    { name = "state", type = "u16" },
+    { name = "swd", type = "u16" },
+    { name = "targetid", type = "u32" },
+    { name = "firmware", type = "u32" },
+    { name = "fw_flags", type = "u16" },
+    { name = "services", type = "variable", entry = "SERVICE_ENTRY" },
+]
+
+[layouts.SERVICE_ENTRY]
+doc = "### TARGET"
+doc_table = 2
+comment = "TARGET's services entry."
+fields = [
+    { name = "service", type = "u16" },
+    { name = "operation", type = "u16" },
+]
+
+[layouts.IDENTIFY]
+doc = "### IDENTIFY"
+fields = [
+    { name = "flags", type = "u16" },
+    { name = "count", type = "u16" },
+    { name = "firmware", type = "list", count = "count", entry = "u32" },
+]
+
+[layouts.IDENTIFY_RESPONSE]
+doc = "### IDENTIFY"
+doc_table = 2
+fields = [
+    { name = "count", type = "u16" },
+    { name = "result", type = "list", count = "count", entry = "u16" },
+]
+
+[layouts.ERROR]
+doc = "### ERROR"
+fields = [
+    { name = "code", type = "u16" },
+    { name = "detail", type = "rest" },
+]
+
+[layouts.BUSY]
+doc = false
+comment = "ERROR BUSY."
+fields = [
+    { name = "code", type = "u16" },
+    { name = "extension", type = "text" },
+]
+
+[layouts.AIRFROG_CMD]
+doc = "### AIRFROG_CMD"
+fields = [
+    { name = "command", type = "u16" },
+    { name = "fields", type = "rest" },
+]
+
+[layouts.HW_INFO]
+doc = "#### GET_HW_INFO"
+comment = "GET_HW_INFO's response."
+fields = [
+    { name = "chip", type = "u16" },
+    { name = "chip_rev", type = "bytes", size = 2 },
+    { name = "flash", type = "u32" },
+    { name = "psram", type = "u32" },
+    { name = "mac", type = "bytes", size = 6 },
+    { name = "model", type = "u16" },
+    { name = "serial", type = "padded", size = "SERIAL_NUMBER_LEN", optional = true },
+]
+
+[layouts.FW_INFO]
+doc = "#### GET_FW_INFO"
+comment = "GET_FW_INFO's response."
+fields = [
+    { name = "version", type = "bytes", size = 3 },
+    { type = "reserved", size = 1 },
+    { name = "bootloader", type = "u16" },
+    { type = "reserved", size = 2 },
+    { name = "wamr", type = "bytes", size = 3 },
+    { type = "reserved", size = 1 },
+    { name = "commit", type = "text", optional = true },
+]
+
+[layouts.WIFI_STA]
+doc = "#### GET_WIFI_STA"
+comment = "GET_WIFI_STA's response."
+fields = [
+    { name = "state", type = "u16" },
+    { name = "rssi", type = "i8" },
+    { type = "reserved", size = 1 },
+    { name = "ipv4", type = "bytes", size = 4 },
+    { name = "ipv6", type = "bytes", size = 16 },
+    { name = "ipv4_mode", type = "u16" },
+    { name = "flags", type = "u16" },
+    { name = "ipv4_netmask", type = "bytes", size = 4 },
+    { name = "ipv4_gateway", type = "bytes", size = 4 },
+    { name = "ipv4_dns", type = "bytes", size = 4 },
+    { name = "reason", type = "u16" },
+    { name = "ssid", type = "text" },
+]
+
+[layouts.WIFI_AP]
+doc = "#### GET_WIFI_AP"
+comment = "GET_WIFI_AP's response."
+fields = [
+    { name = "state", type = "u16" },
+    { name = "stations", type = "u16" },
+    { name = "ipv4", type = "bytes", size = 4 },
+    { name = "ipv6", type = "bytes", size = 16 },
+    { name = "ssid", type = "text" },
+]
+
+[layouts.SET_WIFI_STA]
+doc = "#### SET_WIFI_STA"
+fields = [
+    { name = "ipv4_mode", type = "u16" },
+    { name = "flags", type = "u16" },
+    { name = "ipv4", type = "bytes", size = 4 },
+    { name = "ipv4_netmask", type = "bytes", size = 4 },
+    { name = "ipv4_gateway", type = "bytes", size = 4 },
+    { name = "ipv4_dns", type = "bytes", size = 4 },
+    { name = "ssid", type = "text" },
+    { name = "password", type = "text" },
+]
+
+[layouts.SET_PASSWORD]
+doc = "#### SET_PASSWORD"
+fields = [
+    { name = "key", type = "bytes", size = "KEY_LEN" },
+    { name = "salt", type = "bytes", size = "SALT_LEN" },
+]
+
+[layouts.HOSTNAME]
+doc = "#### GET_HOSTNAME"
+comment = "GET_HOSTNAME's response and SET_HOSTNAME."
+fields = [
+    { name = "hostname", type = "text" },
+]
+
+[layouts.HOST_ALIASES]
+doc = "#### GET_HOST_ALIASES"
+comment = "GET_HOST_ALIASES's response and SET_HOST_ALIASES."
+fields = [
+    { name = "count", type = "u16" },
+    { name = "alias", type = "list", count = "count", entry = "text" },
+]
+
+[layouts.HOST_ALIAS]
+doc = "#### ADD_HOST_ALIAS and REMOVE_HOST_ALIAS"
+comment = "ADD_HOST_ALIAS and REMOVE_HOST_ALIAS."
+fields = [
+    { name = "alias", type = "text" },
+]
+
+[layouts.AUTHORISED_WEBSITES]
+doc = "#### GET_AUTHORISED_WEBSITES"
+comment = "GET_AUTHORISED_WEBSITES's response and SET_AUTHORISED_WEBSITES."
+fields = [
+    { name = "count", type = "u16" },
+    { name = "website", type = "list", count = "count", entry = "text" },
+]
+
+[layouts.AUTHORISED_WEBSITE]
+doc = "#### ADD_AUTHORISED_WEBSITE and REMOVE_AUTHORISED_WEBSITE"
+comment = "ADD_AUTHORISED_WEBSITE and REMOVE_AUTHORISED_WEBSITE."
+fields = [
+    { name = "website", type = "text" },
+]
+
+[layouts.PIN_MAP]
+doc = "#### GET_PIN_MAP"
+comment = "GET_PIN_MAP's response."
+fields = [
+    { name = "board", type = "u32" },
+    { name = "reset_ms", type = "u16" },
+    { name = "boot_delay_ms", type = "u16" },
+    { name = "boot_hold_ms", type = "u16" },
+    { name = "count", type = "u16" },
+    { name = "entries", type = "list", count = "count", entry = "PIN_MAP_ENTRY" },
+]
+
+[layouts.PIN_MAP_ENTRY]
+doc = "#### GET_PIN_MAP"
+doc_table = 2
+comment = "GET_PIN_MAP's entry."
+fields = [
+    { name = "name", type = "padded", size = "PIN_NAME_LEN" },
+    { name = "pin", type = "padded", size = "PIN_NAME_LEN" },
+    { name = "role", type = "u16" },
+    { name = "active_level", type = "u16" },
+    { type = "reserved", size = 4 },
+]
+
+[layouts.BOARDS]
+doc = "#### GET_BOARDS"
+comment = "GET_BOARDS's response."
+fields = [
+    { name = "count", type = "u16" },
+    { name = "entries", type = "list", count = "count", entry = "BOARD_ENTRY" },
+]
+
+[layouts.BOARD_ENTRY]
+doc = "#### GET_BOARDS"
+doc_table = 2
+comment = "GET_BOARDS's entry."
+fields = [
+    { name = "board", type = "u32" },
+    { name = "target", type = "text" },
+    { name = "name", type = "text" },
+]
+
+[layouts.SETTINGS]
+doc = "#### GET_SETTINGS and SET_SETTINGS"
+comment = "GET_SETTINGS's response and SET_SETTINGS."
+fields = [
+    { name = "board", type = "u32", max = true },
+    { name = "boot_window_ms", type = "u16" },
+    { name = "change_check_ms", type = "u16", max = true },
+    { name = "flags", type = "u16" },
+    { name = "boot_window_auto_ms", type = "u16" },
+    { name = "wifi_rescan_s", type = "u32", max = true },
+    { name = "wifi_rescan_db", type = "u16" },
+    { name = "reserved", type = "reserved", size = 2, optional = true },
+]
+
+[layouts.OTA_BEGIN]
+doc = "#### Firmware update"
+fields = [
+    { name = "size", type = "u32" },
+    { name = "sha256", type = "bytes", size = 32 },
+]
+
+[layouts.OTA_WRITE]
+doc = "#### Firmware update"
+doc_table = 2
+fields = [
+    { name = "offset", type = "u32" },
+    { name = "data", type = "rest" },
+]
+
+[layouts.WIFI_SCAN]
+doc = "#### WIFI_SCAN"
+fields = [
+    { name = "flags", type = "u16" },
+]
+
+[layouts.SCAN]
+doc = "#### WIFI_SCAN"
+doc_table = 2
+comment = "WIFI_SCAN's response."
+fields = [
+    { name = "state", type = "u16" },
+    { name = "count", type = "u16" },
+    { name = "networks", type = "list", count = "count", entry = "NETWORK" },
+]
+
+[layouts.NETWORK]
+doc = "#### WIFI_SCAN"
+doc_table = 3
+comment = "WIFI_SCAN's network."
+fields = [
+    { name = "rssi", type = "i8" },
+    { name = "security", type = "u8" },
+    { name = "channel", type = "u8" },
+    { name = "reserved", type = "reserved", size = 1 },
+    { name = "ssid", type = "text" },
+]
+
+[layouts.RESTART]
+doc = "#### RESTART"
+fields = [
+    { name = "mode", type = "u16" },
+    { name = "reserved", type = "reserved", size = 2 },
+    { name = "timeout_ms", type = "u32" },
+]
+
+[layouts.EXT_IMAGE]
+doc = "#### Extensions"
+comment = "An extension image's header."
+fields = [
+    { name = "magic", type = "padded", size = 4 },
+    { name = "model", type = "u16" },
+    { type = "reserved", size = 2 },
+    { name = "wamr", type = "bytes", size = 3 },
+    { type = "reserved", size = 1 },
+    { name = "metadata_offset", type = "u32" },
+    { name = "metadata_len", type = "u32" },
+    { name = "module_offset", type = "u32" },
+    { name = "module_len", type = "u32" },
+    { name = "name", type = "text" },
+]
+
+[layouts.EXTENSIONS]
+doc = "#### GET_EXTENSIONS"
+comment = "GET_EXTENSIONS's response."
+fields = [
+    { name = "count", type = "u16" },
+    { name = "entries", type = "list", count = "count", entry = "EXTENSION_ENTRY" },
+]
+
+[layouts.EXTENSION_ENTRY]
+doc = "#### GET_EXTENSIONS"
+doc_table = 2
+comment = "GET_EXTENSIONS's entry."
+fields = [
+    { name = "flags", type = "u16" },
+    { name = "wasm_state", type = "u16" },
+    { name = "wasm_reason", type = "u16" },
+    { name = "header", type = "layout", entry = "EXT_IMAGE" },
+]
+
+[layouts.EXT_BEGIN]
+doc = "#### Extension install"
+fields = [
+    { name = "size", type = "u32" },
+    { name = "sha256", type = "bytes", size = 32 },
+    { name = "flags", type = "u16" },
+    { type = "reserved", size = 2 },
+]
+
+[layouts.EXTENSION_NAME]
+doc = "#### EXT_REMOVE"
+comment = "EXT_REMOVE's and GET_EXTENSION_METADATA's request."
+fields = [
+    { name = "name", type = "text" },
+]
+
+[layouts.SET_EXTENSIONS]
+doc = "#### SET_EXTENSIONS"
+fields = [
+    { name = "count", type = "u16" },
+    { name = "entries", type = "list", count = "count", entry = "SET_EXTENSIONS_ENTRY" },
+]
+
+[layouts.SET_EXTENSIONS_ENTRY]
+doc = "#### SET_EXTENSIONS"
+doc_table = 2
+comment = "SET_EXTENSIONS's entry."
+fields = [
+    { name = "flags", type = "u16" },
+    { type = "reserved", size = 2 },
+    { name = "name", type = "text" },
+]
+
+[layouts.EXTENSION_METADATA]
+doc = "#### GET_EXTENSION_METADATA"
+doc_table = 2
+comment = "GET_EXTENSION_METADATA's response."
+fields = [
+    { name = "metadata", type = "rest" },
+]
+
+[layouts.TARGET_CMD]
+doc = "### TARGET_CMD"
+fields = [
+    { name = "service", type = "u16" },
+    { name = "operation", type = "u16" },
+    { name = "fields", type = "rest" },
+]
+
+[layouts.RESET_PINS]
+doc = "### RESET"
+fields = [
+    { name = "reset_pin", type = "padded", size = "PIN_NAME_LEN" },
+    { name = "reset_level", type = "u16" },
+    { name = "reset_ms", type = "u16" },
+    { name = "boot_pin", type = "padded", size = "PIN_NAME_LEN" },
+    { name = "boot_level", type = "u16" },
+    { name = "boot_delay_ms", type = "u16" },
+    { name = "boot_hold_ms", type = "u16" },
+    { type = "reserved", size = 2 },
+]
+
+[layouts.SWD_READ]
+doc = "### SWD_MEMORY"
+comment = "SWD_MEMORY's READ."
+fields = [
+    { name = "address", type = "u32" },
+    { name = "length", type = "u32" },
+    { name = "width", type = "u16" },
+    { name = "flags", type = "u16" },
+]
+
+[layouts.SWD_WRITE]
+doc = "### SWD_MEMORY"
+doc_table = 2
+comment = "SWD_MEMORY's WRITE."
+fields = [
+    { name = "address", type = "u32" },
+    { name = "width", type = "u16" },
+    { name = "flags", type = "u16" },
+    { name = "data", type = "rest" },
+]
+
+[layouts.PICOBOOT]
+doc = "### PICOBOOT_RP2350_SWD, PICOBOOT_RP2040_SWD and PICOBOOT_ORICP"
+comment = "A PICOBOOT service's COMMAND."
+fields = [
+    { name = "timeout_ms", type = "u32" },
+    { name = "packet", type = "bytes", size = "PICOBOOT_PACKET_LEN" },
+    { name = "out_data", type = "rest" },
+]
+
+[layouts.PICOBOOT_RESPONSE]
+doc = "### PICOBOOT_RP2350_SWD, PICOBOOT_RP2040_SWD and PICOBOOT_ORICP"
+doc_table = 2
+comment = "A PICOBOOT service's COMMAND's response."
+fields = [
+    { name = "status", type = "bytes", size = "PICOBOOT_STATUS_LEN" },
+    { name = "in_data", type = "rest" },
+]
+
+[layouts.RBCP]
+doc = "### RBCP_ORICP"
+comment = "RBCP_ORICP's FRAME."
+fields = [
+    { name = "timeout_ms", type = "u32" },
+    { name = "length", type = "u32" },
+    { name = "frame", type = "rest" },
+]
+
+[layouts.RBCP_RESPONSE]
+doc = "### RBCP_ORICP"
+doc_table = 2
+comment = "RBCP_ORICP's FRAME's response."
+fields = [
+    { name = "header", type = "bytes", size = "RBCP_HEADER_LEN" },
+    { name = "data", type = "rest" },
+]
+
+[layouts.GPIO_SET]
+doc = "### GPIO"
+comment = "GPIO's SET."
+fields = [
+    { name = "pin", type = "padded", size = "PIN_NAME_LEN" },
+    { name = "level", type = "u16" },
+    { type = "reserved", size = 2 },
+]
+
+[layouts.GPIO_GET]
+doc = "### GPIO"
+doc_table = 2
+comment = "GPIO's GET."
+fields = [
+    { name = "pin", type = "padded", size = "PIN_NAME_LEN" },
+]
+
+[layouts.GPIO_GET_RESPONSE]
+doc = "### GPIO"
+doc_table = 3
+comment = "GPIO's GET's response."
+fields = [
+    { name = "level", type = "u16" },
+    { type = "reserved", size = 2 },
+]
+
+[layouts.EXT_CMD]
+doc = "### EXT_CMD and EXT_NOTIFY"
+comment = "EXT_CMD's request and EXT_NOTIFY."
+fields = [
+    { name = "name", type = "text" },
+    { name = "data", type = "rest" },
+]
+
+[target_mcus.RP2040]
+designer = 0x493
+parts = [0x1002]
+
+[target_mcus.RP2350]
+designer = 0x493
+parts = [0x0040]
+
+[target_mcus.STM32F103]
+designer = 0x020
+parts = [0x410, 0x412, 0x414, 0x430]
+
+[target_mcus.STM32F401]
+designer = 0x020
+parts = [0x423, 0x433]
+
+[target_mcus.STM32F411]
+designer = 0x020
+parts = [0x431]
+
+[chips.ESP32C3]
+value = 5
+name = "ESP32-C3"
+target = "esp32c3"
+
+[chips.ESP32S3]
+value = 9
+name = "ESP32-S3"
+target = "esp32s3"
+psram = true
+
+[[cli_targets]]
+target = "x86_64-pc-windows-msvc"
+platform = "Windows x86 64-bit"
+os = "windows"
+arch = "x86_64"
+files = [[".zip", "windows", "x86_64"]]
+
+[[cli_targets]]
+target = "aarch64-pc-windows-msvc"
+platform = "Windows ARM 64-bit"
+os = "windows"
+arch = "aarch64"
+files = [[".zip", "windows", "aarch64"], [".zip", "windows", "arm64"]]
+
+[[cli_targets]]
+target = "universal-apple-darwin"
+platform = "macOS"
+os = "macos"
+arch = ""
+files = [[".zip", "macos"]]
+
+[[cli_targets]]
+target = "x86_64-unknown-linux-gnu"
+platform = "Ubuntu/Debian x86 64-bit"
+os = "linux"
+arch = "x86_64"
+files = [[".deb", "amd64"]]
+
+[[cli_targets]]
+target = "aarch64-unknown-linux-gnu"
+platform = "Ubuntu/Debian/Pi ARM 64-bit"
+os = "linux"
+arch = "aarch64"
+files = [[".deb", "arm64"]]
+
+[[cli_targets]]
+target = "armv7-unknown-linux-gnueabihf"
+platform = "Ubuntu/Debian/Pi ARM 32-bit"
+os = "linux"
+arch = "arm"
+files = [[".deb", "armhf"]]
+
+[[models]]
+value = 1
+name = "Mini"
+chip = "ESP32C3"
+released = true
+
+[[models]]
+value = 2
+name = "Pro"
+chip = "ESP32S3"
+released = true
+
+[firmware_states]
+comment = "The states of the target's firmware."
+RUNNING = "Running"
+STOPPED = "Stopped"
+
+[messages]
+comment = """
+Every text the pages display, which pages refer to. A state or error is \
+the state, then what to do. A confirmation is a question about the \
+action."""
+
+[messages.TARGET_STATE]
+comment = "The target's state without firmware, as TARGET: STATE."
+[messages.TARGET_STATE.entries]
+IDENTIFYING = "Target: Identifying"
+NO_TARGET = "Target: Not found"
+NO_FIRMWARE = "Target: No firmware found"
+
+[messages.RESTARTING]
+export = false
+text = "Airfrog restarting."
+
+[messages.INVALID_FIRMWARE_FILE]
+comment = "A firmware file that isn't Airfrog firmware for this Airfrog."
+export = false
+text = "Invalid firmware file."
+
+[messages.ERROR_CODES]
+comment = "ERROR codes without their own AirfrogError code."
+export = false
+keys = "errors"
+[messages.ERROR_CODES.entries]
+INTERNAL_ERROR = "Internal error."
+UPDATE_IN_PROGRESS = "Update already in progress."
+
+[messages.CLOSED]
+comment = "Closes this page didn't request: the state, before what to do."
+[messages.CLOSED.entries]
+PASSWORD_CHANGED = "Password changed."
+PROTOCOL_ERROR = "Connection closed by Airfrog (unexpected message)."
+BAD_COUNTER_OR_HMAC = "Connection closed by Airfrog (security check failed)."
+TOO_MANY_CONNECTIONS = "Too many connections."
+LOGIN_TIMEOUT = "Login timed out."
+NETWORK_SETTINGS_CHANGED = "Network settings changed."
+
+[messages.CLOSE_ANOTHER]
+export = false
+text = "Close another page or program using Airfrog"
+
+[messages.MEMORY]
+comment = "The target's memory over SWD, for the CLI and the memory edit extension."
+[messages.MEMORY.entries]
+NOT_READABLE = "Target memory not readable over SWD."
+NOT_READABLE_AT = "Target memory at that address not readable."
+NOT_WRITABLE = "Target memory not writable over SWD."
+NOT_WRITABLE_AT = "Target memory at that address not writable."
+
+[messages.RECONNECTING]
+comment = "What to do after a close, on a page that connects again itself."
+text = "Reconnecting…"
+
+[messages.INVALID_VALUE]
+comment = "ERROR OUT_OF_RANGE's text, everywhere."
+export = false
+text = "Invalid value."
+
+[messages.ERRORS]
+comment = "For each AirfrogError code: the text, from its detail."
+functions = true
+rust = true
+[messages.ERRORS.entries]
+TIMEOUT = "No response from Airfrog."
+PASSWORD_REQUIRED = "Password required."
+LOGIN_FAILED = "Incorrect password."
+LOGIN_BLOCKED = { args = ["s"], rust_args = ["Option<u32>"], cases = [
+    { is = 1, text = "Too many failed login attempts. Retry in 1 second." },
+    { absent = true, text = "Too many failed login attempts. Retry later." },
+    { text = "Too many failed login attempts. Retry in {s} seconds." },
+] }
+PROOF_MISMATCH = "Login failed. Check the Airfrog address."
+PASSWORD_CHANGED = "{CLOSED.PASSWORD_CHANGED} Reconnect with the new password."
+PROTOCOL_ERROR = "{CLOSED.PROTOCOL_ERROR} Reconnect."
+BAD_COUNTER_OR_HMAC = "{CLOSED.BAD_COUNTER_OR_HMAC} Reconnect."
+TOO_MANY_CONNECTIONS = "{CLOSED.TOO_MANY_CONNECTIONS} {CLOSE_ANOTHER}, then reconnect."
+LOGIN_TIMEOUT = "{CLOSED.LOGIN_TIMEOUT} Reconnect."
+NETWORK_SETTINGS_CHANGED = "{CLOSED.NETWORK_SETTINGS_CHANGED} Reconnect."
+CLOSED = { args = ["code"], rust_args = ["Option<u16>"], cases = [
+    { falsy = true, text = "Connection to Airfrog lost." },
+    { text = "Connection closed by Airfrog (code {code})." },
+] }
+INVALID_MESSAGE = "Unrecognised message from Airfrog."
+BUSY = { args = ["extension"], rust_args = ["&str"], cases = [
+    { falsy = true, text = "Target in use. Try again later." },
+    { text = 'Target in use by extension "{extension}". Try again later.' },
+] }
+NOT_CLAIMED = "Target session expired. Try again."
+NOT_OFFERED = { args = ["name"], rust_args = ["Option<&str>"], cases = [
+    { absent = true, text = "Target state changed. Try again." },
+    { text = "Extension {name} doesn't handle commands." },
+] }
+TRANSFER_FAILED = "No response from target."
+NOT_RUNNING = { args = ["name"], rust_args = ["Option<&str>"], cases = [
+    { absent = true, text = "Extension not running." },
+    { text = "Extension {name} not running." },
+] }
+MEMORY_FAULT = "Target memory not readable at that address."
+OUT_OF_RANGE = "{INVALID_VALUE}"
+INSTALL_IN_PROGRESS = "Extension install already in progress."
+EXTENSION_INVALID = "Invalid extension."
+EXTENSION_UNSUPPORTED = "Extension not supported by this Airfrog."
+NO_SPACE = "No room for the extension. Remove an extension, then try again."
+IMAGE_INVALID = "{INVALID_FIRMWARE_FILE}"
+RESTARTING = "{RESTARTING}"
+CODE = { args = ["code"], rust_args = ["u16"], lookup = "ERROR_CODES", text = "Airfrog error {code}." }
+TRANSFER_TOO_LARGE = { args = ["len", "max"], rust_args = ["usize", "u32"], text = "Transfer of {len} bytes is larger than Airfrog's limit of {max}" }
+PIN_NAME = { args = ["name"], rust_args = ["&str"], text = "Pin name {name} too long. Maximum {PIN_NAME_LEN} characters." }
+CONNECT = "Airfrog not found. Check its address and network."
+IO = "Connection to Airfrog failed."
+
+[messages.RECONNECT]
+comment = "For a page that connects again itself, a close's text with RECONNECTING."
+[messages.RECONNECT.entries]
+PASSWORD_CHANGED = "{CLOSED.PASSWORD_CHANGED} {RECONNECTING}"
+NETWORK_SETTINGS_CHANGED = "{CLOSED.NETWORK_SETTINGS_CHANGED} {RECONNECTING}"
+TOO_MANY_CONNECTIONS = "{CLOSED.TOO_MANY_CONNECTIONS} {CLOSE_ANOTHER}. {RECONNECTING}"
+RESTARTING = "{RESTARTING} {RECONNECTING}"
+LOST = "Not connected. {RECONNECTING}"
+
+[messages.CONNECTION]
+comment = "Connecting and logging in."
+[messages.CONNECTION.entries]
+CONNECTING = "Connecting to Airfrog…"
+LOGGING_IN = "Logging in…"
+LOG_IN_AGAIN = "{CLOSED.PASSWORD_CHANGED} Log in again."
+FORGOTTEN = { comment = "Followed by a link to the recovery page.", text = "Forgotten password: See " }
+LOG_IN = { comment = "The login card's title and button.", text = "Log in" }
+PASSWORD = "Password"
+INVALID_ADDRESS = { args = ["host"], text = "Invalid address {host}." }
+NOT_AIRFROG = "Not an Airfrog at this address. Check the address."
+CLOSED = { comment = "A connection closed by this page, or closed before a command.", text = "Connection to Airfrog closed." }
+
+[messages.RESTART]
+comment = "Restart in the System tab."
+[messages.RESTART.entries]
+CONFIRM = "Are you sure you want to restart Airfrog?"
+PROGRESS = "Restarting…"
+FAILED = "Restart failed."
+BUTTON = { comment = "The About card's button and the confirmation's.", text = "Restart" }
+
+[messages.FULL_UI_NOT_LOADED]
+comment = "The warning card when the Airfrog full user interface doesn't load, before the reason."
+text = "Full Airfrog UI not loaded."
+
+[messages.SETTINGS]
+comment = "Reading and saving Airfrog's settings."
+[messages.SETTINGS.entries]
+SAVING = "Saving…"
+SAVED = "Saved."
+SAVE_FAILED = "Save failed."
+READ_FAILED = "Settings read failed."
+INVALID_VALUE = { comment = "Airfrog failed a value with OUT_OF_RANGE.", text = "{INVALID_VALUE}" }
+SAVE = "Save"
+
+[messages.NETWORK]
+comment = "The Network tab."
+[messages.NETWORK.entries]
+SCANNING = "Scanning…"
+SCAN_FAILED = "Scan failed. Try again."
+NO_NETWORKS = "No networks found."
+JOINING = { args = ["ssid"], text = "Airfrog joining {ssid}." }
+JOINING_RECONNECT = { args = ["ssid", "url"], linked = true, text = "Airfrog joining {ssid}. Open {url} on that network if this page doesn't reconnect." }
+NOT_JOINED = { args = ["ssid"], text = "Airfrog failed to connect to {ssid}. Check the network name and password, then select Save and connect." }
+AP_JOINED = { args = ["ssid", "url"], linked = true, comment = "The warning card while this page uses AP mode after Airfrog joined ssid.", text = "Airfrog joined {ssid}. This page uses Airfrog's AP mode, which will be disabled in 2 minutes. Open {url} on {ssid}." }
+JOINED = { args = ["ssid", "url"], linked = true, comment = "The status once the connection through AP mode closes.", text = "Airfrog joined {ssid}. Open {url} on that network." }
+AP_STOPPED = { args = ["ssid", "url"], linked = true, text = "AP mode stopped. Open {url} on {ssid}." }
+HOSTNAME_CHANGED = { args = ["name"], text = "Hostname changed to {name}." }
+HOSTNAME_RECONNECT = { args = ["name", "url"], linked = true, text = "Hostname changed to {name}. Open {url} if this page doesn't reconnect." }
+WIFI_TITLE = "WiFi"
+WIFI_CONNECTED = "Connected"
+WIFI_CONNECTING = "Connecting"
+WIFI_NOT_CONNECTED = "Not connected"
+WIFI_NETWORK_NOT_FOUND = "Network not found"
+WIFI_WRONG_PASSWORD = "Wrong password"
+WIFI_FAILED = "Connection failed"
+WIFI_NOT_SET = "Not set"
+NETWORK_ROW = "Network"
+SIGNAL_ROW = "Signal"
+IP_ADDRESS = "IP address"
+SUBNET_MASK = { comment = "A WiFi card row and a Join a network field.", text = "Subnet mask" }
+GATEWAY = "Gateway"
+DNS_SERVER = "DNS server"
+IP_ASSIGNMENT = "IP assignment"
+MANUAL = "Manual"
+AUTOMATIC_DHCP = "Automatic (DHCP)"
+IPV6_ADDRESS = "IPv6 address"
+MAC_ADDRESS = "MAC address"
+AP_MODE = "AP mode"
+AP_MODE_TIP = "The Airfrog access point. Password airfrogx. It stops when Airfrog joins a network, or 2 minutes later when a device is connected to it."
+STOP_AP_MODE = "Stop AP mode"
+POWER_SAVE = "WiFi power save"
+POWER_SAVE_TIP = "Uses less power. Airfrog responds more slowly."
+RESCAN_INTERVAL = "Rescan interval (s)"
+RESCAN_INTERVAL_TIP = "Minimum 60 s. 0: disabled."
+INVALID_RESCAN_INTERVAL = "Invalid rescan interval. Use 0, or {RESCAN_MIN_S} s or more."
+RESCAN_THRESHOLD = "Rescan threshold (dB)"
+RESCAN_THRESHOLD_TIP = "1 to 100 dB."
+INVALID_RESCAN_THRESHOLD = "Invalid rescan threshold. Use 1 to {RESCAN_DB_MAX} dB."
+JOIN_TITLE = "Join a network"
+JOIN_TIP = "Connect Airfrog to another WiFi network. Saving disconnects it from its current network."
+NETWORK_NAME = "Network name"
+INVALID_SSID = "Invalid WiFi network name. Use 1 to {SSID_MAX} characters."
+SCAN = "Scan"
+REQUIRES_PASSWORD = { comment = "A scanned network's padlock.", text = "Requires a password" }
+NOT_SUPPORTED = { comment = "A scanned network whose security Airfrog doesn't support.", text = "Not supported" }
+PASSWORD_OPTIONAL = "Password (optional)"
+PASSWORD_TIP = { args = ["kept"], comment = "With the password field's value while the stored password is kept.", text = "{kept}: the stored password. Empty: open network." }
+INVALID_PASSWORD = "Invalid WiFi password. Use {WIFI_PASSWORD_MIN} to {WIFI_PASSWORD_MAX} characters, or none for an open network."
+STATIC_IP = "Static IP address"
+STATIC_IP_TIP = "Assigns Airfrog a fixed IP address instead of one from your router."
+GATEWAY_OPTIONAL = "Gateway (optional)"
+DNS_SERVER_OPTIONAL = "DNS server (optional)"
+INVALID_IP_ADDRESS = "Invalid IP address. Use four numbers 0 to 255 separated by dots."
+INVALID_SUBNET_MASK = "Invalid subnet mask. Use four numbers 0 to 255 separated by dots."
+INVALID_GATEWAY = "Invalid gateway. Use four numbers 0 to 255 separated by dots."
+INVALID_DNS_SERVER = "Invalid DNS server. Use four numbers 0 to 255 separated by dots."
+ZERO_IP_ADDRESS = "IP address can't be 0.0.0.0."
+SUBNET_MASK_BITS = { comment = "A subnet mask of 0.0.0.0 or with its bits not in one run.", text = "Invalid subnet mask. For example, use 255.255.255.0." }
+SAVE_AND_CONNECT = "Save and connect"
+HOSTNAME = { comment = "The Hostname card's title and field.", text = "Hostname" }
+HOSTNAME_TIP = "Name of this Airfrog on your network. Changing it causes Airfrog to disconnect and reconnect."
+INVALID_HOSTNAME = "Invalid hostname. Use 1 to {HOSTNAME_MAX} letters, digits and hyphens, not starting or ending with a hyphen."
+HOST_ALIASES = "Host aliases"
+HOST_ALIASES_TIP = "Other names for Airfrog, for example from your router's DNS. Up to 4, separated by spaces."
+TOO_MANY_ALIASES = "Too many host aliases. Maximum {HOST_ALIASES_MAX}."
+INVALID_ALIAS = { args = ["alias"], text = "Invalid host alias {alias}. Use up to {HOST_ALIAS_MAX} characters: labels of 1 to {LABEL_MAX} letters, digits and hyphens, separated by dots." }
+
+[messages.PASSWORD]
+comment = "The Password card."
+[messages.PASSWORD.entries]
+SET = "Password set."
+NOT_SET = "No password set."
+REMOVED = "Password removed."
+CONFIRM_REMOVE = "Are you sure you want to remove Airfrog's password?"
+TITLE = "Password"
+NEW_PASSWORD = "New password"
+CONFIRM_PASSWORD = "Confirm password"
+ENTER_NEW = "Enter the new password."
+NOT_MATCHING = "Passwords don't match."
+SET_PASSWORD = { comment = "The card's button and the link in the warning card without a password.", text = "Set password" }
+CHANGE_PASSWORD = "Change password"
+REMOVE_PASSWORD = "Remove password"
+REMOVE = { comment = "CONFIRM_REMOVE's button.", text = "Remove" }
+
+[messages.AUTHORISED_WEBSITES]
+comment = "The Authorised websites card in the System tab. {site} is a website as siteName() in awp.js displays it."
+[messages.AUTHORISED_WEBSITES.entries]
+TITLE = "Authorised websites"
+TIP = "Websites authorised to connect to Airfrog, for example onerom.org."
+NONE = { comment = "The card without a website.", text = "None." }
+REVOKE = { comment = "A row's button and CONFIRM_REVOKE's.", text = "Revoke" }
+CONFIRM_REVOKE = { args = ["site"], text = "Are you sure you want to revoke {site}?" }
+WEBSITE = "Website"
+ADD = "Add"
+TOO_MANY = "Too many authorised websites. Maximum {AUTHORISED_WEBSITES_MAX}."
+INVALID = { args = ["website"], comment = "With the website as typed.", text = "Invalid website {website}. Use a host name or IP address with optional http(s):// and :port." }
+EXISTS = { args = ["site"], text = "{site} is already authorised." }
+
+[messages.UI_VERSION_ROW]
+comment = "The About card's row for the Airfrog full user interface's version."
+text = "Airfrog UI"
+
+[messages.UPDATE]
+comment = "Firmware update in the System tab."
+[messages.UPDATE.entries]
+FILE_HELP = { args = ["file"], comment = "The New firmware file tooltip, with the update image's file name.", text = "Airfrog firmware image {file} from airfrog.org." }
+INVALID_FILE = "{INVALID_FIRMWARE_FILE}"
+WRONG_MODEL = { comment = "Airfrog firmware for another model.", text = "Invalid firmware file (incorrect Airfrog model)." }
+UNSIGNED = "Unsigned firmware."
+LATEST = { comment = "The Version row's note.", text = "Latest release." }
+LATEST_UNKNOWN = { comment = "Followed by why the firmware manifest isn't available.", text = "Latest release unknown." }
+DOWNLOADING = { args = ["version"], text = "Downloading firmware {version}…" }
+DOWNLOAD_FAILED = { args = ["version", "reason"], text = "Firmware {version} download failed ({reason})." }
+CORRUPT = { comment = "DOWNLOAD_FAILED's reason when the file doesn't match the firmware manifest.", text = "file corrupt" }
+UPDATING = { args = ["version"], text = "Updating to firmware {version}…" }
+VERIFYING = "Verifying the firmware…"
+RESTARTING = { args = ["version"], text = "Restarting into firmware {version}…" }
+RELOADING = "Reloading…"
+UPDATED = { args = ["version"], text = "Updated to firmware {version}." }
+REVERTED = { args = ["wanted", "running"], text = "Update to firmware {wanted} failed. Reverted to firmware {running}." }
+FAILED = { comment = "Followed by the reason.", text = "Firmware update failed." }
+NO_RESPONSE = { args = ["previous"], text = "No response from Airfrog after restart. Airfrog will revert to firmware {previous} within 2 minutes." }
+NOT_CONNECTED = "Not connected to Airfrog."
+TITLE = "Firmware"
+VERSION_ROW = "Version"
+INVALID_RELEASE_LIST = { comment = "LATEST_UNKNOWN's reason when the firmware manifest isn't valid.", text = "Invalid release list." }
+UPDATE_TO = { args = ["version"], text = "Update to {version}" }
+RELEASE_NOTES = "Release notes"
+HTTP_STATUS = { args = ["status"], comment = "DOWNLOAD_FAILED's reason for an HTTP error.", text = "HTTP {status}" }
+TIMED_OUT = { comment = "DOWNLOAD_FAILED's reason when nothing is received for DOWNLOAD_TIMEOUT_MS.", text = "timed out" }
+UPDATE_FIRMWARE = "Update firmware"
+FILE = "New firmware file"
+CHECKING = { comment = "The chosen file's mark while it is checked.", text = "Checking" }
+VALID = "Valid"
+NOT_VALID = "Not valid"
+UPDATE = { comment = "The button for the chosen file.", text = "Update" }
+
+[messages.TARGET_CARD]
+comment = "The Target cards on the Target and Advanced tabs."
+[messages.TARGET_CARD.entries]
+TITLE = "Target"
+CONNECTED = "Connected"
+IDENTIFYING = "Identifying…"
+NO_FIRMWARE = { args = ["mcu"], text = "{mcu}, no firmware found" }
+NO_TARGET = "No target found"
+NO_RESPONSE = "No response from target. Check J1 wiring and target power."
+RESET = "Reset target"
+RESETTING = "Resetting target…"
+RESET_FAILED = { args = ["reason"], text = "Reset failed. {reason}" }
+TIP = { comment = "The Advanced tab's card's help.", text = "The board Airfrog is connected to." }
+MCU = "MCU"
+MCU_NO_RESPONSE = { comment = "The MCU row when the target doesn't respond over SWD.", text = "No response" }
+FIRMWARE = "Firmware"
+BOARD = "Board"
+CHANGE = { comment = "The Board row's link to the board type setting.", text = "Change" }
+SERVICES = "Services"
+SERVICES_TIP = "Services clients can use on this target through Airfrog."
+
+[messages.PINS]
+comment = "The Airfrog pins card."
+[messages.PINS.entries]
+TITLE = "Airfrog pins"
+TIP = "J1 and J2 pinout for the connected target."
+BOARD = { args = ["model"], comment = "The board render's aria-label.", text = "Airfrog {model} with J1 and J2 labelled" }
+CONNECTOR = { args = ["connector"], comment = "A connector drawing's aria-label.", text = "{connector} pins" }
+PIN = "Pin"
+NAME = "Name"
+
+[messages.AIRFROG]
+text = "Airfrog"
+
+[messages.PAGE]
+comment = "The home page's header, tabs and footer."
+[messages.PAGE.entries]
+FIRMWARE = { args = ["version"], comment = "The header's firmware version.", text = "firmware {version}" }
+MODEL = { args = ["model"], comment = "The header's Airfrog model.", text = "{AIRFROG} {model}" }
+NETWORK_TAB = "Network"
+SYSTEM_TAB = "System"
+ADVANCED_TAB = "Advanced"
+TARGET_TAB = { comment = "The Target tab's name.", text = "Target" }
+FOOTER_VERSION = { args = ["version"], text = "{AIRFROG} {version}" }
+FROM = { comment = "Before the author's link in the footer.", text = "from" }
+
+[messages.VALUES]
+comment = "Values as any card displays them."
+[messages.VALUES.entries]
+NONE = { comment = "A value Airfrog doesn't have or that doesn't apply.", text = "-" }
+BOARD = { args = ["id"], comment = "A board not in GET_BOARDS's list, by its ID in hex.", text = "Board 0x{id}" }
+FIRMWARE = { args = ["id"], comment = "Firmware Airfrog doesn't recognise, by its ID.", text = "Firmware {id}" }
+MCU = { args = ["chip"], comment = "An MCU this page doesn't recognise, by GET_HW_INFO's chip.", text = "MCU {chip}" }
+MODEL = { args = ["number"], comment = "A model without a name in this code, by its number.", text = "Model {number}" }
+MCU_REVISION = { args = ["mcu", "revision"], text = "{mcu}, revision {revision}" }
+TARGET_MCU = { args = ["id"], comment = "A target MCU Airfrog's rules don't include, by its TARGETID in hex.", text = "Unknown MCU (ID 0x{id})" }
+UNKNOWN = { comment = "A value that can't be read or isn't recognised.", text = "Unknown" }
+SERVICE = { args = ["service"], comment = "A service not in SERVICES, by its number.", text = "Service {service}" }
+OPERATION = { args = ["operation"], comment = "An operation not in SERVICES, by its number.", text = "operation {operation}" }
+VERSION = { args = ["version"], text = "v{version}" }
+WITH_COMMIT = { args = ["version", "commit"], text = "{version} ({commit})" }
+MB = { args = ["size"], text = "{size} MB" }
+KB = { args = ["size"], text = "{size} KB" }
+DBM = { args = ["rssi"], text = "{rssi} dBm" }
+
+[messages.CONTROLS]
+comment = "Captions of controls any card can use."
+[messages.CONTROLS.entries]
+CANCEL = { comment = "A prompt's button that closes it.", text = "Cancel" }
+CHOOSE_FILE = "Choose file"
+
+[messages.UNRECOGNISED_REPLY]
+comment = "A reply from Airfrog too short for its fields."
+text = "Unrecognised reply from Airfrog. Firmware may be newer than this page."
+
+[messages.ABOUT]
+comment = "The About card in the System tab."
+[messages.ABOUT.entries]
+TITLE = "About"
+SERIAL_NUMBER = "Serial number"
+MODEL = "Model"
+MCU = "MCU"
+FLASH = "Flash"
+PSRAM = "PSRAM"
+
+[messages.TARGET_SETTINGS]
+comment = "The Target settings card on the Advanced tab."
+[messages.TARGET_SETTINGS.entries]
+TITLE = "Target settings"
+BOARD_TYPE = "Board type"
+BOARD_TYPE_TIP = "The target's board type. Selects the Airfrog to target pin mapping. Automatic: set by detecting the target's firmware."
+AUTOMATIC = { comment = "The board type's and the boot window's automatic choice.", text = "Automatic" }
+AUTOMATIC_BOARD = { args = ["board"], comment = "The automatic board type with the board detected.", text = "Automatic ({board})" }
+CHOOSE_BOARD = "Choose a board."
+BOOT_WINDOW = "Boot window (ms)"
+BOOT_WINDOW_TIP = "Delay after a target reset before Airfrog attempts to identify the target. 0 to 10000 ms. Automatic: the longest boot window of any supported target firmware."
+INVALID_BOOT_WINDOW = "Invalid boot window. Use 0 to {BOOT_WINDOW_MAX_MS} ms."
+CHANGE_CHECK = "Target check interval (ms)"
+CHANGE_CHECK_TIP = "How often Airfrog checks for a target reset or a new target. 0 to 65535 ms. 0: disabled."
+INVALID_CHANGE_CHECK = "Invalid target check interval. Use 0 to 65535 ms."
+RECOVERY = "Airfrog recovery"
+RECOVERY_TIP = "Whether the target can reinstall Airfrog firmware and erase Airfrog settings when Airfrog boots."
+
+[messages.SERIAL_ACTIONS]
+comment = "Each command's action in SERIAL_SETUP.NO_RESPONSE, by the command's name."
+[messages.SERIAL_ACTIONS.entries]
+GET_HW_INFO = "hardware read"
+GET_FW_INFO = "firmware read"
+GET_WIFI_STA = "WiFi status read"
+GET_WIFI_AP = "AP mode read"
+SET_WIFI_STA = "WiFi network save"
+SET_PASSWORD = "password save"
+GET_HOSTNAME = "hostname read"
+SET_HOSTNAME = "hostname save"
+GET_HOST_ALIASES = "host aliases read"
+SET_HOST_ALIASES = "host aliases save"
+GET_AUTHORISED_WEBSITES = "authorised websites read"
+SET_AUTHORISED_WEBSITES = "authorised websites save"
+ADD_AUTHORISED_WEBSITE = "authorised website add"
+REMOVE_AUTHORISED_WEBSITE = "authorised website remove"
+GET_PIN_MAP = "pin map read"
+GET_SETTINGS = "settings read"
+SET_SETTINGS = "settings save"
+GET_BOARDS = "board list read"
+WIFI_SCAN = "WiFi scan"
+
+[messages.SERIAL_SETUP]
+comment = "Airfrog's setup over serial."
+[messages.SERIAL_SETUP.entries]
+CLOSED = "Serial connection to Airfrog closed."
+FAILED = { args = ["reason"], text = "Serial connection to Airfrog failed ({reason})." }
+NO_HELLO = { args = ["s"], text = "No response from Airfrog firmware after {s} s." }
+NO_RESPONSE = { args = ["action"], text = "No response from Airfrog over serial ({action})." }
+COMMAND = { args = ["cmd"], comment = "NO_RESPONSE's action for a command without one in SERIAL_ACTIONS.", text = "command {cmd}" }
+
+[messages.EXTENSIONS]
+comment = "The Extensions tab, Install extensions, Install from file and each extension UI tab."
+[messages.EXTENSIONS.entries]
+TAB = { comment = "The tab's name.", text = "Extensions" }
+INSTALLED_TITLE = "Extensions"
+NONE_INSTALLED = "No extensions installed."
+EXTENSION = { comment = "The installed list's column headers.", text = "Extension" }
+VERSION = "Version"
+STATE = "State"
+TAB_COLUMN = "Tab"
+TAB_CHECKBOX = { args = ["name"], comment = "The Tab checkbox's label for screen readers.", text = "{name} tab" }
+LATEST = { args = ["version"], comment = "After the installed version.", text = "latest {version}" }
+SIDE_LOADED = "from file"
+DEPUBLISHED = "Depublished"
+RUNNING = "{RUNNING}"
+STOPPED = "{STOPPED}"
+UI_ONLY = "UI only"
+OPEN = "Open"
+UPDATE = "Update"
+REINSTALL = "Reinstall"
+REMOVE = "Remove"
+INSTALL = "Install"
+DRAG_NOTE = "Drag to reorder. Tabs appear in this order."
+ADD = { comment = "The button and its view's title.", text = "Install extensions" }
+FROM_FILE = "Install from file"
+BACK = "Back"
+SEARCH = "Search"
+FOR = "For:"
+ANY_TARGET = "Any target"
+OTHER_TARGETS = "Other targets"
+COUNT = { args = ["shown", "total"], text = "{shown} of {total} available extensions" }
+SIDE_LOAD_CONFIRM = "Extensions added from a file have full access to Airfrog."
+REMOVE_CONFIRM = { args = ["name"], text = "Are you sure you want to remove {name}?" }
+INSTALLING = { args = ["name", "version"], text = "Installing {name} {version}…" }
+INSTALLED = { args = ["name", "version"], text = "Installed {name} {version}." }
+UPDATING = { args = ["name", "version"], text = "Updating {name} to {version}…" }
+UPDATED = { args = ["name", "version"], text = "Updated {name} to {version}." }
+REMOVING = { args = ["name"], text = "Removing {name}…" }
+REMOVED = { args = ["name"], text = "Removed {name}." }
+INSTALL_FAILED = { comment = "Followed by the reason.", text = "Install failed." }
+UPDATE_FAILED = { comment = "Followed by the reason.", text = "Update failed." }
+REMOVE_FAILED = { comment = "Followed by the reason.", text = "Remove failed." }
+READ_FAILED = { comment = "Followed by the reason.", text = "Extensions read failed." }
+LIST_NOT_LOADED = { comment = "Followed by the reason.", text = "Extension list not loaded." }
+INVALID_FILE = "Invalid extension file."
+CORRUPT = { comment = "A downloaded extension image that doesn't match the extension list.", text = "Download corrupt. Try again." }
+NOT_INSTALLED = { args = ["name"], comment = "EXT_CMD's OUT_OF_RANGE.", text = "Extension {name} not installed." }
+LOADING_UI = { args = ["name"], text = "Loading {name} UI…" }
+UI_FAILED = { args = ["name"], text = "{name} UI failed to load. Reload the page." }
+NOT_IN_AIRFROG_UI = { comment = "connectExtension() in a page that isn't inside the Airfrog UI.", text = "Not inside the Airfrog UI." }
+NOT_PERMITTED = { args = ["name"], comment = "A request an extension UI can't send, by its name.", text = "{name} not available to an extension UI." }
+
+[messages.RELEASE_LIST]
+comment = "The firmware manifest's failures, on Airfrog's home page, in the full user interface and on airfrog.org/commissioning."
+[messages.RELEASE_LIST.entries]
+SIGNATURE = "Release list signature invalid."
+INVALID = "{UPDATE.INVALID_RELEASE_LIST}"
+
+[messages.HOME_PAGE]
+comment = "Airfrog's home page, while it loads the full user interface, and when it fails. The full user interface displays the same manifest failures."
+page = true
+[messages.HOME_PAGE.entries]
+TITLE = "{AIRFROG}"
+LOADING = "Loading…"
+DOWNLOAD_FAILED = "Download failed. Check internet access."
+DOWNLOAD_HTTP = { args = ["status"], text = "Download failed (HTTP {status})." }
+DOWNLOAD_TIMED_OUT = "Download failed (timed out)."
+RELEASE_LIST_SIGNATURE = "{RELEASE_LIST.SIGNATURE}"
+RELEASE_LIST_INVALID = "{RELEASE_LIST.INVALID}"
+MANIFEST_SIGNATURE = "Invalid signature."
+MANIFEST_INVALID = "Invalid manifest."
+NO_MANIFEST_KEY = "Rebuild firmware with CONFIG_AIRFROG_MANIFEST_KEY."
+NEWER_FIRMWARE = "Newer firmware required. Update firmware."
+DOWNLOAD_CORRUPT = "Download corrupt. Reload the page."
+INCOMPLETE = "Incomplete release."
+START_FAILED = "Start failed. Reload the page."
+BRIDGE_NOT_LOADED = { args = ["reason"], text = "Bridge window not loaded. {reason}" }
+UI_FAILED = "Airfrog UI failed to load. Reload the page."
+
+[messages.BRIDGE]
+comment = """
+The bridge window, and its closes on the website's page. {host} is the \
+Airfrog's host and {site} the website, as siteName() in awp.js \
+displays it."""
+[messages.BRIDGE.entries]
+TITLE = { args = ["host", "site"], comment = "The browser tab title.", text = "{host} ({site})" }
+ALLOW_CONNECT = { args = ["site", "host"], comment = "Before connecting a website that isn't authorised.", text = "Allow {site} to connect to {host}?" }
+ALLOW = "Allow"
+OPENED_DIRECTLY = "Do not open this window directly."
+CONNECT_FROM = { args = ["site"], text = "Close this window and connect from {site}." }
+ENTER_PASSWORD = { args = ["host", "site"], text = "Enter {host}'s password to allow {site} to connect." }
+FORGOTTEN = { comment = "Followed by a link to the recovery page.", text = "Forgotten password:" }
+CONNECTED = { args = ["site", "host"], text = "{site} is connected to {host}." }
+CLOSING_DISCONNECTS = { args = ["site", "host"], text = "Closing this window disconnects {site} from {host}." }
+DISCONNECT = "Disconnect"
+DISCONNECTED = { args = ["site", "host"], text = "{site} was disconnected from {host}." }
+NOT_CONNECTED = { args = ["site", "host"], text = "{site} couldn't connect to {host}." }
+RECONNECT_FROM = { args = ["site"], text = "Reconnect from {site}." }
+CLOSE = "Close"
+PASSWORD_CHANGED = { args = ["host"], text = "{host}'s password was changed." }
+RESTARTED = { args = ["host"], text = "{host} restarted." }
+NOT_RESPONDING = { args = ["host"], text = "{host} stopped responding." }
+NETWORK_SETTINGS_CHANGED = { args = ["host"], text = "{host}'s network settings were changed." }
+PROTOCOL_ERROR = { args = ["host", "site"], text = "{host} received an unexpected message from {site}." }
+BAD_COUNTER_OR_HMAC = { args = ["host"], text = "{host} received a message with an invalid signature or sequence number." }
+UNKNOWN_CLOSE = { args = ["host", "code"], text = "{host} closed the connection with unknown error {code}." }
+TOO_MANY_CONNECTIONS = { args = ["host"], text = "{host} has too many connections. Close another page or program connected to {host}." }
+LOGIN_TIMEOUT = { args = ["host"], text = "{host} closed the connection because the login timed out." }
+TOO_MANY_WEBSITES = { args = ["host"], text = "{host} has too many authorised websites. Revoke one in {host}'s System tab." }
+ADD_FAILED = { args = ["site", "host"], text = "Failed to add {site} as an authorised website on {host}." }
+REVOKED = { args = ["site"], text = "{site}'s authorisation has been revoked." }
+READ_FAILED = { args = ["host"], text = "Failed to read {host}'s authorised websites." }
+PROOF_MISMATCH = { args = ["host"], text = "{host} sent an invalid response to the login." }
+INVALID_FROM_AIRFROG = { args = ["host"], text = "Received an unexpected message from {host}." }
+INVALID_FROM_SITE = { args = ["site"], text = "Received a message from {site} with an invalid type or payload." }
+UNSUPPORTED_FROM_SITE = { args = ["name", "site"], comment = "With the message's name, and an AIRFROG_CMD's command.", text = "Received an unsupported message ({name}) from {site}." }
+WINDOW_CLOSED = { args = ["host"], text = "The {host} window was closed." }
+WINDOW_DISCONNECTED = { args = ["host"], text = "The {host} window ended the connection." }
+BLOCKED = { args = ["host", "site"], text = "Connecting to {host} opens a pop-up window which the browser blocked. Allow pop-ups for {site}, then retry." }
+
+[messages.PICOFLASH]
+comment = "picoboot-airfrog's failures."
+rust = "picoboot-airfrog"
+[messages.PICOFLASH.entries]
+SERVICE_COUNT = { args = ["count"], rust_args = ["usize"], comment = "TARGET doesn't list exactly one PICOBOOT service.", text = "Airfrog offers {count} PICOBOOT services, expected 1" }
+INVALID_REPLY = "Invalid PICOBOOT reply from Airfrog."
+TARGET_RESTARTED = "Target restarted. Try again."
+NOT_OPEN = "PICOBOOT service not open"
+OUT_DATA_LENGTH = { args = ["out", "transfer"], rust_args = ["usize", "usize"], text = "OUT data is {out} bytes and dTransferLength is {transfer}" }
+
+[messages.COMMISSIONING]
+comment = "airfrog.org/commissioning's warning and log."
+[messages.COMMISSIONING.entries]
+NO_SERIAL = "Commissioning is not supported from this browser. Use Chrome or Edge."
+LOG = "Log"
+
+[messages.COMMISSIONING_CONNECT]
+comment = "airfrog.org/commissioning's Connect card."
+[messages.COMMISSIONING_CONNECT.entries]
+CONNECT = { comment = "The card's title and button.", text = "Connect" }
+WIRING = "Wire a USB serial adapter to the Airfrog J2 connector and power the target."
+WIRING_TIP = "Use a 3.3 V adapter. Wire GND to GND, TX to RX, RX to TX, DTR to DTR and RTS to RTS. The target powers Airfrog."
+CONNECTING = { comment = "Also on the Firmware card.", text = "Connecting to Airfrog…" }
+CONNECTED = { comment = "The card's pill.", text = "Connected" }
+UNSUPPORTED_MCU = { args = ["mcu"], text = "Unsupported MCU {mcu}. Expected ESP32-C3 or ESP32-S3." }
+UNSUPPORTED_FLASH = { args = ["size"], text = "Unsupported flash size {size}. Expected 4 MB." }
+FLASH_UNKNOWN = "Flash size unknown."
+CHECK_WIRING = "Check adapter wiring to J2, then select Connect."
+CONNECTION_FAILED = { args = ["reason"], comment = "With esptool-js's error.", text = "Connection to Airfrog failed. {reason}" }
+HOLD_BOOT = "Hold BOOT low while pulling EN low and releasing it, then select Connect."
+NO_PSRAM = { comment = "The PSRAM row of an ESP32-S3 without PSRAM.", text = "None" }
+
+[messages.COMMISSIONING_FIRMWARE]
+comment = "airfrog.org/commissioning's Firmware card. The full user interface also displays MANIFEST_KEY_NOT_SET."
+[messages.COMMISSIONING_FIRMWARE.entries]
+RELEASE = "Release"
+INSTALL_FIRMWARE = "Install firmware"
+INSTALL_TIP = "Erases the Airfrog flash, settings included, and writes the release."
+KEEP = "Keep current firmware"
+KEEP_TIP = "Starts the current Airfrog firmware and keeps the settings."
+CONFIRM_INSTALL = { args = ["version"], text = "Install firmware {version}? The Airfrog settings are erased." }
+INSTALL = { comment = "CONFIRM_INSTALL's button.", text = "Install" }
+MANIFEST_KEY_NOT_SET = "Manifest key not set."
+RELEASE_LIST = { comment = "A download's name.", text = "Release list" }
+FIRMWARE = { comment = "A download's name.", text = "Firmware" }
+RELEASE_VERSION = { args = ["version"], comment = "A download's name.", text = "Release v{version}" }
+DOWNLOAD_FAILED = { args = ["download"], text = "{download} download failed. Check internet access." }
+DOWNLOAD_HTTP = { args = ["download", "status"], text = "{download} download failed (HTTP {status})." }
+DOWNLOAD_TIMED_OUT = { args = ["download"], text = "{download} download failed (timed out)." }
+DOWNLOAD_CORRUPT = { args = ["download"], text = "{download} download corrupt." }
+FLASH_SIZE_DIFFERS = "Release flash size doesn't match the Airfrog flash size."
+RELEASE_LIST_NOT_LOADED = "Release list not loaded."
+RELOAD = "Reload the page to try again."
+NOT_RECOGNISED = { comment = "No released model has the connected board's MCU and PSRAM.", text = "Airfrog model not recognised." }
+NO_RELEASES = { args = ["model"], text = "No {model} firmware released." }
+WRONG_FIRMWARE = { args = ["installed", "model"], comment = "Keep current firmware. Both are model names.", text = "Airfrog firmware is for {installed}, not {model}." }
+BOARD_CHANGED = { comment = "Install firmware or Keep current firmware connected again, to a board the selected model doesn't run on. Model lists the new board's models.", text = "Airfrog board changed. Check the model." }
+FIRMWARE_NOT_FOUND = { comment = "Keep current firmware. The board's flash is blank or the firmware can't be read.", text = "Airfrog firmware not found." }
+ERASING = "Erasing Airfrog flash…"
+INSTALLING = { args = ["version"], text = "Installing firmware {version}…" }
+WRITE_FAILED = { args = ["reason"], comment = "With esptool-js's error.", text = "Firmware write failed. {reason}" }
+CONNECT_TO_RESTART = "Select Connect to start again."
+INSTALL_TO_RETRY = "Select Install firmware to try again, or choose another release."
+STARTING = "Starting Airfrog…"
+NOT_RELEASED = { args = ["version"], text = "Firmware {version} not a published release." }
+SELECT_INSTALL = "Select Install firmware."
+NOT_SUPPORTED = { args = ["release"], text = "Release {release} not supported by this page." }
+READING_SETTINGS = "Reading Airfrog settings…"
+KEEP_TO_RETRY = "Select Keep current firmware to try again."
+NO_SERIAL_RESPONSE = "No response from Airfrog over serial."
+CHECK_TX = "Check adapter TX to J2 RX, then select Keep current firmware."
+SERIAL_FAILED = { args = ["reason"], text = "Serial port failed. {reason}" }
+CHECK_ADAPTER = "Check the adapter is plugged in, then select Connect."
+
+[messages.COMMISSIONING_DONE]
+comment = "airfrog.org/commissioning's Done card."
+[messages.COMMISSIONING_DONE.entries]
+TITLE = "Done"
+HOME_PAGE = "Airfrog home page"
+JOINED = { args = ["ssid"], text = "Joined {ssid}" }
+COMMISSIONED = "Airfrog commissioned."
+DISCONNECT_ADAPTER = "Disconnect the adapter from J2."
+
+[messages.WEB]
+comment = "airfrog.org/web."
+[messages.WEB.entries]
+ADDRESS = "Airfrog address"
+DEFAULT_ADDRESS = { comment = "The address in the field until one is saved.", text = "airfrog.local" }
+CHANGE = "Change address"
+NO_RESPONSE = { args = ["host"], text = "No response from {host}." }
+BLOCKED = { args = ["site"], text = "Local network access is blocked for {site}. Allow it in the browser's site settings." }
+OPEN = { args = ["host"], comment = "A link to the Airfrog home page, after NO_RESPONSE and BLOCKED.", text = "Open http://{host}/" }
+
+[rust_texts]
+comment = "airfrog-client's error texts that pages don't display."
+HTTP_STATUS = { args = ["status"], rust_args = ["u16"], text = "Airfrog returned HTTP status {status}" }
+DISCOVER = { args = ["reason"], rust_args = ["&str"], text = "Couldn't search the network for Airfrogs: {reason}" }
+
+[recovery_constants]
+comment = "The recovery protocol's request header (airfrog-v2/docs/recovery-protocol.md), One ROM's flash during a recovery and the settings block of One ROM's recovery and serial firmware (airfrog-v2/docs/ac5-design.md sections 4 and 5), and the support firmware manifest's keys. In airfrog-cli's schema.rs and airfrog-v2's components/protocol/airfrog_recovery.h."
+FIRMWARE_ADDR = { value = 0x10000000, type = "u32", hex = true, comment = "The recovery firmware in One ROM's flash." }
+FIRMWARE_MAX = { value = 0x10000, type = "usize", hex = true }
+REQUEST_ADDR = { value = 0x10010000, type = "u32", hex = true, comment = "The request header, in its own 4 KB sector." }
+REQUEST_SECTOR = { value = 4096, type = "usize" }
+IMAGE_ADDR = { value = 0x10011000, type = "u32", hex = true, comment = "The Airfrog firmware image." }
+IMAGE_MAX = { value = 0x180000, type = "usize", hex = true }
+REQUEST_MAGIC = { value = "AFRQ", type = "str" }
+REQUEST_VERSION = { value = 1, type = "u8" }
+REQUEST_LEN = { value = 64, type = "usize" }
+REQUEST_VERSION_OFFSET = { value = 4, type = "usize" }
+REQUEST_ACTION_OFFSET = { value = 5, type = "usize" }
+REQUEST_RESULT_OFFSET = { value = 6, type = "usize" }
+REQUEST_ZERO_OFFSET = { value = 7, type = "usize", comment = "A byte that is zero." }
+REQUEST_IMAGE_SIZE_OFFSET = { value = 8, type = "usize" }
+REQUEST_IMAGE_SHA256_OFFSET = { value = 12, type = "usize" }
+REQUEST_RESULT_ADDR_OFFSET = { value = 44, type = "usize" }
+REQUEST_RESERVED_OFFSET = { value = 48, type = "usize", comment = "16 bytes that are zero." }
+RESULT_ADDR = { value = 0x10010040, type = "u32", hex = true, comment = "The address of Airfrog's result, after the request header." }
+RESULT_LEN = { value = 4, type = "usize" }
+ACTION_REINSTALL = { value = 1, type = "u8" }
+ACTION_ERASE = { value = 2, type = "u8" }
+RESULT_DONE = { value = 1, type = "u8" }
+RESULT_WRONG_MODEL = { value = 2, type = "u8" }
+RESULT_SHA256_MISMATCH = { value = 3, type = "u8" }
+RESULT_INVALID_FIRMWARE = { value = 4, type = "u8" }
+RESULT_TOO_LARGE = { value = 5, type = "u8" }
+RESULT_ONEROM_UNREADABLE = { value = 6, type = "u8" }
+RESULT_WRITE_FAILED = { value = 7, type = "u8" }
+RESULT_ERASE_FAILED = { value = 8, type = "u8" }
+RECOVERY_FIRMWARE = { value = "onerom-airfrog-recovery", type = "str", support_firmware = true, comment = "The recovery firmware's key in the support firmware manifest." }
+SERIAL_FIRMWARE = { value = "onerom-airfrog-serial-recovery", type = "str", support_firmware = true, comment = "The serial firmware's key in the support firmware manifest." }
+PICO_FIRMWARE = { value = "pico-airfrog-serial-adapter", type = "str", c = false, support_firmware = true, comment = "The Pico's serial adapter firmware's key in the support firmware manifest." }
+USB_MANUFACTURER = { value = "piers.rocks", type = "str", comment = "The serial firmware's USB manufacturer string." }
+USB_PRODUCT = { value = "One ROM Airfrog Recovery", type = "str", comment = "The serial firmware's USB product string." }
+PICO_USB_PRODUCT = { value = "Airfrog Serial Adapter", type = "str", comment = "The Pico serial adapter firmware's USB product string." }
+SERIAL_ADDR = { value = 0x20000000, type = "u32", hex = true, comment = "The serial firmware in One ROM's RAM." }
+SETTINGS_OFFSET = { value = 0x200, type = "usize", hex = true, comment = "The settings block's offset in the recovery and serial firmware." }
+SETTINGS_MAGIC = { value = 0x53524641, type = "u32", hex = true }
+SETTINGS_VERSION = { value = 1, type = "u8" }
+SETTINGS_LEN = { value = 16, type = "usize" }
+SETTINGS_NONE = { value = 0xFF, type = "u8", hex = true, comment = "A GPIO that isn't used." }
+SETTINGS_VERSION_OFFSET = { value = 4, type = "usize" }
+SETTINGS_SEL_A_OFFSET = { value = 5, type = "usize" }
+SETTINGS_SEL_B_OFFSET = { value = 6, type = "usize" }
+SETTINGS_LED_OFFSET = { value = 7, type = "usize" }
+SETTINGS_TX_OFFSET = { value = 8, type = "usize" }
+SETTINGS_RX_OFFSET = { value = 9, type = "usize" }
+SETTINGS_DTR_OFFSET = { value = 10, type = "usize" }
+SETTINGS_RTS_OFFSET = { value = 11, type = "usize" }
+TX_LEG = { value = 1, type = "u8", comment = "The One ROM leg the serial firmware transmits on, wired to J2 RX." }
+RX_LEG = { value = 2, type = "u8", comment = "The One ROM leg the serial firmware receives on, wired to J2 TX." }
+DTR_LEG = { value = 3, type = "u8", comment = "The One ROM leg the serial firmware drives from DTR, wired to J2 DTR." }
+RTS_LEG = { value = 4, type = "u8", comment = "The One ROM leg the serial firmware drives from RTS, wired to J2 RTS." }
+
+[cli_output]
+comment = "The airfrog CLI's output, in airfrog-cli's schema.rs. {cli} is the command that runs the CLI: airfrog or onerom airfrog."
+
+[cli_output.SELECT]
+comment = "Selecting an Airfrog."
+MULTIPLE = { args = ["found"], rust_args = ["&str"], text = "Multiple Airfrogs found.  Use --airfrog to select one.\n  Found: {found}" }
+NONE = { args = ["cli"], rust_args = ["&str"], text = "No Airfrog was found or specified.\n  Specify an Airfrog using --airfrog.\n  Use '{cli} scan' to list Airfrogs on the network." }
+PASSWORD_PROMPT = { args = ["host"], rust_args = ["&str"], text = "Password for {host}: " }
+PASSWORD_REQUIRED = { args = ["host"], rust_args = ["&str"], text = "Airfrog {host} is password-protected.\n  Use --airfrog-password to provide the password." }
+PASSWORD_NOT_ENTERED = "No password provided."
+FAILED = { args = ["host", "reason"], rust_args = ["&str", "&str"], text = "Hit an error accessing Airfrog {host}:\n  {reason}" }
+OVER_USB = "The selected operation must be performed over USB.\n  Do not specify --airfrog."
+OVER_SERIAL = "The selected operation must be performed over serial.\n  Do not specify --airfrog."
+
+[cli_output.PROMPT]
+comment = "A prompt for confirmation, as onerom's."
+CONFIRM = " (y/N): "
+AUTO_ACCEPTED = "Auto-accepted (--yes)"
+ABORTED = "Aborted"
+
+[cli_output.ARGS]
+comment = "Why an option's value is invalid, after clap's own words, with a range as A-B."
+NOT_IN = { args = ["value", "min", "max"], rust_args = ["i64", "u64", "u64"], text = "{value} is not in {min}-{max}" }
+NOT_ZERO_OR_IN = { args = ["value", "min", "max"], rust_args = ["i64", "u64", "u64"], text = "{value} is not 0 or in {min}-{max}" }
+LENGTH_NOT_IN = { args = ["length", "min", "max"], rust_args = ["usize", "usize", "usize"], text = "length {length} is not in {min}-{max}" }
+LENGTH_NOT_ZERO_OR_IN = { args = ["length", "min", "max"], rust_args = ["usize", "usize", "usize"], text = "length {length} is not 0 or in {min}-{max}" }
+NOT_HOST = "not a hostname or IP address"
+NOT_HOSTNAME = "not a hostname"
+NOT_IP_ADDRESS = "not an IP address"
+NOT_SUBNET_MASK = "not a subnet mask"
+NOT_VERSION = "not a version"
+NOT_WEBSITE = "not a website"
+
+[cli_output.SCAN]
+SCANNING = "Scanning the network ..."
+FOUND = { args = ["count"], rust_args = ["usize"], cases = [
+    { is = 1, text = "found 1 Airfrog:" },
+    { text = "found {count} Airfrogs:" },
+] }
+ROW = { args = ["hostname", "address"], rust_args = ["&str", "&str"], text = "  {hostname} {address}" }
+NONE = "No Airfrogs found."
+
+[cli_output.INSPECT]
+NAME = { args = ["model"], rust_args = ["&str"], text = "{AIRFROG} {model}" }
+FIRMWARE = "{UPDATE.TITLE}"
+HOSTNAME = "{NETWORK.HOSTNAME}"
+SERIAL_NUMBER = "{ABOUT.SERIAL_NUMBER}"
+MCU = "{ABOUT.MCU}"
+FLASH = "{ABOUT.FLASH}"
+PSRAM = "{ABOUT.PSRAM}"
+MCU_REVISION = { args = ["mcu", "major", "minor"], rust_args = ["&str", "u8", "u8"], text = "{mcu} revision {major}.{minor}" }
+VERSION = { args = ["version"], rust_args = ["&str"], text = "v{version}" }
+MB = { args = ["size"], rust_args = ["u32"], text = "{size}MB" }
+KB = { args = ["size"], rust_args = ["u32"], text = "{size}KB" }
+UNKNOWN_MODEL = { args = ["number"], rust_args = ["u16"], text = "model {number}" }
+UNKNOWN_MCU = { args = ["chip"], rust_args = ["u16"], text = "MCU {chip}" }
+
+[cli_output.PROGRAM]
+DOWNLOADING = { args = ["version"], rust_args = ["&str"], text = "Downloading firmware v{version}..." }
+UPDATING = { args = ["version"], rust_args = ["&str"], text = "Updating to firmware v{version}..." }
+VERIFYING = "Verifying the firmware..."
+RESTARTING = { args = ["version"], rust_args = ["&str"], text = "Restarting into firmware v{version}..." }
+UPDATED = { args = ["version"], rust_args = ["&str"], text = "Updated to firmware v{version}." }
+UNSIGNED = "{UPDATE.UNSIGNED}"
+REVERTED = { args = ["running"], rust_args = ["&str"], text = "Update failed: Airfrog reverted to firmware v{running}" }
+NO_RESPONSE = { args = ["previous"], rust_args = ["&str"], text = "Update failed: no response from Airfrog after restart\n  Airfrog reverts to firmware v{previous} within 2 minutes." }
+NOT_RELEASED = { args = ["version"], rust_args = ["&str"], text = "Firmware release not found: v{version}" }
+NO_FIRMWARE = { args = ["model"], rust_args = ["&str"], text = "Firmware release not found for model: {model}" }
+INVALID_FILE = { args = ["file"], rust_args = ["&str"], text = "Invalid firmware file: {file}" }
+WRONG_MODEL = { args = ["file"], rust_args = ["&str"], text = "Airfrog model mismatch: {file}" }
+
+[cli_output.DOWNLOAD]
+FAILED = { args = ["url", "reason"], rust_args = ["&str", "&str"], text = "Download failed: {url}\n  {reason}" }
+HTTP = { args = ["status"], rust_args = ["u16"], text = "HTTP status {status}" }
+TIMED_OUT = "{UPDATE.TIMED_OUT}"
+SHA256_MISMATCH = { args = ["file", "expected", "got"], rust_args = ["&str", "&str", "&str"], text = "SHA256 mismatch for downloaded file '{file}':\n  expected {expected}\n  got      {got}" }
+SIZE_MISMATCH = { args = ["file", "expected", "got"], rust_args = ["&str", "usize", "usize"], text = "Size mismatch for downloaded file '{file}':\n  expected {expected}\n  got      {got}" }
+FILE = { args = ["file", "reason"], rust_args = ["&str", "&str"], text = "File not readable: {file}\n  {reason}" }
+NOT_WRITTEN = { args = ["file", "reason"], rust_args = ["&str", "&str"], text = "File not written: {file}\n  {reason}" }
+MANIFEST_KEY_NOT_SET = "{COMMISSIONING_FIRMWARE.MANIFEST_KEY_NOT_SET}"
+MANIFEST_SIGNATURE = { args = ["url"], rust_args = ["&str"], text = "Invalid manifest signature: {url}" }
+MANIFEST_INVALID = { args = ["url"], rust_args = ["&str"], text = "Invalid manifest: {url}" }
+
+[cli_output.REBOOT]
+RESTARTING = "{RESTARTING}"
+
+[cli_output.WIFI]
+STATE = { args = ["state"], rust_args = ["&str"], text = "{NETWORK.WIFI_TITLE}: {state}" }
+CONNECTED = "{NETWORK.WIFI_CONNECTED}"
+CONNECTING = "{NETWORK.WIFI_CONNECTING}"
+NOT_CONNECTED = "{NETWORK.WIFI_NOT_CONNECTED}"
+NETWORK_NOT_FOUND = "{NETWORK.WIFI_NETWORK_NOT_FOUND}"
+WRONG_PASSWORD = "{NETWORK.WIFI_WRONG_PASSWORD}"
+FAILED = "{NETWORK.WIFI_FAILED}"
+NOT_SET = "{NETWORK.WIFI_NOT_SET}"
+NETWORK = "{NETWORK.NETWORK_ROW}"
+SIGNAL = "{NETWORK.SIGNAL_ROW}"
+IP_ADDRESS = "{NETWORK.IP_ADDRESS}"
+SUBNET_MASK = "{NETWORK.SUBNET_MASK}"
+GATEWAY = "{NETWORK.GATEWAY}"
+DNS_SERVER = "{NETWORK.DNS_SERVER}"
+IP_ASSIGNMENT = "{NETWORK.IP_ASSIGNMENT}"
+MANUAL = "{NETWORK.MANUAL}"
+AUTOMATIC_DHCP = "{NETWORK.AUTOMATIC_DHCP}"
+IPV6_ADDRESS = "{NETWORK.IPV6_ADDRESS}"
+MAC_ADDRESS = "{NETWORK.MAC_ADDRESS}"
+POWER_SAVE = "{NETWORK.POWER_SAVE}"
+RESCAN_INTERVAL = "Rescan interval"
+RESCAN_THRESHOLD = "Rescan threshold"
+ON = "on"
+OFF = "off"
+NONE = "{VALUES.NONE}"
+DBM = { args = ["rssi"], rust_args = ["i8"], text = "{rssi}dBm" }
+SECONDS = { args = ["s"], rust_args = ["u32"], text = "{s}s" }
+DB = { args = ["db"], rust_args = ["u16"], text = "{db}dB" }
+SAVED = "WiFi settings saved."
+SCANNING = "Scanning..."
+FOUND = { args = ["count"], rust_args = ["usize"], cases = [
+    { is = 1, text = "found 1 network:" },
+    { text = "found {count} networks:" },
+] }
+NETWORK_ROW = { args = ["ssid", "signal"], rust_args = ["&str", "&str"], text = "  {ssid} {signal}" }
+NETWORK_ROW_NOTE = { args = ["ssid", "signal", "note"], rust_args = ["&str", "&str", "&str"], text = "  {ssid} {signal} - {note}" }
+PASSWORD_PROTECTED = "Password protected"
+NOT_SUPPORTED = "{NETWORK.NOT_SUPPORTED}"
+NO_NETWORKS = "{NETWORK.NO_NETWORKS}"
+SCAN_FAILED = "{NETWORK.SCAN_FAILED}"
+JOINING = { args = ["ssid"], rust_args = ["&str"], text = "Airfrog joining network: {ssid}" }
+PASSWORD_PROMPT = { args = ["ssid"], rust_args = ["&str"], text = "WiFi password for {ssid}: " }
+PASSWORD_REQUIRED = "WiFi password required."
+INVALID_PASSWORD = { args = ["reason"], rust_args = ["&str"], text = "Invalid WiFi password: {reason}" }
+
+[cli_output.AP_MODE]
+STATE = { args = ["state"], rust_args = ["&str"], text = "{NETWORK.AP_MODE}: {state}" }
+CONNECTED_DEVICES = "Connected devices"
+STOPPED = "AP mode stopped."
+NOT_JOINED = "AP mode remains active until Airfrog joins a network."
+
+[cli_output.HOSTNAME]
+CHANGED = { args = ["name"], rust_args = ["&str"], text = "{NETWORK.HOSTNAME_CHANGED}\n  Use --airfrog {name}.local to select it." }
+
+[cli_output.PASSWORD]
+NEW_PROMPT = "{PASSWORD.NEW_PASSWORD}: "
+CONFIRM_PROMPT = "{PASSWORD.CONFIRM_PASSWORD}: "
+NOT_MATCHING = "Passwords do not match."
+REQUIRED = "New password required.\n  Use --new-password to provide the password."
+ALREADY_SET = { args = ["cli"], rust_args = ["&str"], text = "Airfrog password already set.\n  Use '{cli} password update' to change the password." }
+NOT_SET = { args = ["cli"], rust_args = ["&str"], text = "{PASSWORD.NOT_SET}\n  Use '{cli} password set' to set a password." }
+SET = "{PASSWORD.SET}"
+CONFIRM_REMOVE = "{PASSWORD.CONFIRM_REMOVE}"
+REMOVED = "{PASSWORD.REMOVED}"
+
+[cli_output.HOST_ALIAS]
+ADDED = { args = ["alias"], rust_args = ["&str"], text = "Added host alias: {alias}" }
+REMOVED = { args = ["alias"], rust_args = ["&str"], text = "Removed host alias: {alias}" }
+EXISTS = { args = ["alias"], rust_args = ["&str"], text = "Host alias already exists: {alias}" }
+NOT_PRESENT = { args = ["alias"], rust_args = ["&str"], text = "Host alias not present: {alias}" }
+TOO_MANY = "{NETWORK.TOO_MANY_ALIASES}"
+
+[cli_output.WEBSITE]
+ADDED = { args = ["site"], rust_args = ["&str"], text = "Added authorised website: {site}" }
+REMOVED = { args = ["site"], rust_args = ["&str"], text = "Removed authorised website: {site}" }
+EXISTS = { args = ["site"], rust_args = ["&str"], text = "{AUTHORISED_WEBSITES.EXISTS}" }
+NOT_AUTHORISED = { args = ["site"], rust_args = ["&str"], text = "{site} isn't an authorised website." }
+TOO_MANY = "{AUTHORISED_WEBSITES.TOO_MANY}"
+INVALID = { args = ["website"], rust_args = ["&str"], text = "{AUTHORISED_WEBSITES.INVALID}" }
+
+[cli_output.EXTENSION]
+LINE = { args = ["name", "version", "note", "state"], rust_args = ["&str", "&str", "&str", "&str"], text = "{name} {version}{note} - {state}" }
+LATEST = { args = ["version"], rust_args = ["&str"], text = " (latest {version})" }
+SIDE_LOADED = " (side-loaded)"
+DEPUBLISHED = " ({EXTENSIONS.DEPUBLISHED})"
+RUNNING = "{RUNNING}"
+STOPPED = "{STOPPED}"
+UI_ONLY = "{EXTENSIONS.UI_ONLY}"
+NONE_INSTALLED = "{EXTENSIONS.NONE_INSTALLED}"
+LIST_NOT_LOADED = { args = ["reason"], rust_args = ["&str"], text = "Extensions manifest not loaded: {reason}" }
+INSTALLING = { args = ["name", "version"], rust_args = ["&str", "&str"], text = "Installing {name} {version}..." }
+UPDATING = { args = ["name", "version"], rust_args = ["&str", "&str"], text = "Updating {name} to {version}..." }
+INSTALLED = { args = ["name", "version"], rust_args = ["&str", "&str"], text = "Installed extension: {name} {version}" }
+UPDATED = { args = ["name", "version"], rust_args = ["&str", "&str"], text = "Updated extension: {name} {version}" }
+REMOVED = { args = ["name"], rust_args = ["&str"], text = "Removed extension: {name}" }
+ALREADY_INSTALLED = { args = ["name"], rust_args = ["&str"], text = "Extension already installed: {name}" }
+NOT_FOUND = { args = ["name"], rust_args = ["&str"], text = "Extension not found: {name}" }
+UP_TO_DATE = { args = ["name"], rust_args = ["&str"], text = "Extension is up to date: {name}." }
+IS_SIDE_LOADED = { args = ["name"], rust_args = ["&str"], text = "Extension side-loaded: {name}" }
+IS_DEPUBLISHED = { args = ["name"], rust_args = ["&str"], text = "Extension depublished: {name}" }
+NOT_INSTALLED = { args = ["name"], rust_args = ["&str"], text = "Extension not installed: {name}" }
+UNSUPPORTED = { args = ["name"], rust_args = ["&str"], text = "Extension not supported: {name}" }
+INVALID = { args = ["name"], rust_args = ["&str"], text = "Invalid extension: {name}" }
+INVALID_FILE = { args = ["file"], rust_args = ["&str"], text = "Invalid extension file: {file}" }
+AVAILABLE_TITLE = { args = ["name", "version"], rust_args = ["&str", "&str"], comment = "Above the rows with --verbose.", text = "{name} {version}" }
+AVAILABLE = { args = ["name", "version", "targets"], rust_args = ["&str", "&str", "&str"], text = "{name} {version} - {targets}" }
+TARGET = { args = ["firmware"], rust_args = ["&str"], text = "Target: {firmware}" }
+TARGETS = { args = ["firmware"], rust_args = ["&str"], text = "Targets: {firmware}" }
+ALL_TARGETS = "All"
+TARGETS_ROW = "Targets"
+TARGET_ROW = "Target"
+DESCRIPTION_ROW = "Description"
+AUTHOR_ROW = "Author"
+NONE_AVAILABLE = "No extensions available."
+
+[cli_output.TARGET]
+RESETTING = "Resetting target..."
+RESET = "Target reset."
+RESET_BOOTLOADER = "Target reset into bootloader."
+NO_RESET = "Reset not available for this target."
+NO_BOOT = "Reset into bootloader not available for this target."
+NOT_READABLE_AT = "{MEMORY.NOT_READABLE_AT}"
+NOT_READABLE = "{MEMORY.NOT_READABLE}"
+NOT_WRITABLE_AT = "{MEMORY.NOT_WRITABLE_AT}"
+NOT_WRITABLE = "{MEMORY.NOT_WRITABLE}"
+INVALID_HEX = "Data not an even number of hex digits."
+NO_DATA = "Nothing to write."
+WROTE = { args = ["bytes", "address"], rust_args = ["usize", "&str"], cases = [
+    { is = 1, text = "Wrote 1 byte at {address}." },
+    { text = "Wrote {bytes} bytes at {address}." },
+] }
+RANGE = "Address range past 0xFFFFFFFF."
+INVALID_WIDTH = { args = ["width"], rust_args = ["u32"], text = "Address or length not a multiple of the width: {width}" }
+PROGRAMMING = "Programming target..."
+VERIFIED = "Verification passed"
+PROGRAMMED = "Programming complete"
+VERIFY_FAILED = { args = ["offset", "expected", "received"], rust_args = ["&str", "&str", "&str"], comment = "With the numbers in hex.", text = "Verification failed at offset {offset}\nExpected {expected} received {received}" }
+NOT_PROGRAMMABLE = "Target can't be programmed through Airfrog."
+INVALID_UF2 = { args = ["file"], rust_args = ["&str"], text = "Invalid UF2 file: {file}" }
+UF2_OUTSIDE_FLASH = { args = ["address", "target"], rust_args = ["&str", "&str"], comment = "With the first address in the file outside the flash in hex and the chip's name, for example RP2040.", text = "UF2 address {address} is outside the {target}'s flash region." }
+UF2_WRONG_CHIP = { args = ["uf2", "target"], rust_args = ["&str", "&str"], comment = "With the chips' names, for example RP2040.", text = "UF2 is for an {uf2}. Target is an {target}." }
+NOT_RETURNED = "Target didn't enter bootloader."
+
+[cli_output.TARGET_SETTINGS]
+TITLE = "{TARGET_SETTINGS.TITLE}"
+BOARD_TYPE = "{TARGET_SETTINGS.BOARD_TYPE}"
+BOOT_WINDOW = "Boot window"
+CHECK_INTERVAL = "Target check interval"
+RECOVERY = "{TARGET_SETTINGS.RECOVERY}"
+AUTOMATIC = "{TARGET_SETTINGS.AUTOMATIC}"
+AUTOMATIC_WITH = { args = ["value"], rust_args = ["&str"], text = "{TARGET_SETTINGS.AUTOMATIC} ({value})" }
+MS = { args = ["ms"], rust_args = ["u16"], text = "{ms}ms" }
+ENABLED = "enabled"
+DISABLED = "disabled"
+BOARD = { args = ["target", "name"], rust_args = ["&str", "&str"], comment = "GET_BOARDS's target and board name.", text = "{target} {name}" }
+BOARD_NAMES = { args = ["names"], rust_args = ["&str"], comment = "target-board list's boards of a target.", text = "  {names}" }
+UNKNOWN_BOARD = { args = ["id"], rust_args = ["&str"], comment = "With the ID in hex.", text = "Board 0x{id}" }
+BOARD_NOT_FOUND = { args = ["cli", "board"], rust_args = ["&str", "&str"], text = "Board type not found: {board}\n  Use '{cli} target-board list' to list board types." }
+AMBIGUOUS_BOARD = { args = ["board", "found"], rust_args = ["&str", "&str"], text = "Multiple board types match: {board}\n  Found: {found}" }
+SAVED = "Target settings saved."
+
+[cli_output.COMMISSION]
+PROGRAMMING = { comment = "Also pico program.", text = "Programming device - DO NOT DISCONNECT" }
+CONNECTING = "Connecting to Airfrog..."
+SUCCEEDED = "Commissioning succeeded"
+USE_AP_MODE = "  Use AP mode to set up Airfrog."
+FAILED_NO_RESPONSE = "Commissioning failed: no response from Airfrog"
+LOG = { comment = "Before the end of the log.", text = "Airfrog log:" }
+NO_RESPONSE = "{ERRORS.TIMEOUT}"
+CONNECTION_FAILED = { args = ["status", "error"], rust_args = ["&str", "&str"], text = "Connection to Airfrog failed (status {status}h, error {error}h)." }
+WRITE_FAILED = { args = ["status", "error"], rust_args = ["&str", "&str"], text = "Firmware write failed (status {status}h, error {error}h)." }
+UNSUPPORTED_MCU = { args = ["mcu"], rust_args = ["&str"], text = "MCU not supported: {mcu}" }
+WRONG_MCU = { args = ["model", "mcu"], rust_args = ["&str", "&str"], text = "MCU not supported by Airfrog {model}: {mcu}" }
+NO_PSRAM = { args = ["model", "mcu"], rust_args = ["&str", "&str"], text = "MCU not supported by Airfrog {model}: {mcu} without PSRAM" }
+FLASH_UNKNOWN = "{COMMISSIONING_CONNECT.FLASH_UNKNOWN}"
+UNSUPPORTED_FLASH = { args = ["size"], rust_args = ["&str"], text = "Flash size not supported: {size}" }
+VERIFY_FAILED = { args = ["offset"], rust_args = ["&str"], text = "Flash verification failed at offset {offset}" }
+INVALID_FILES = "{UPDATE.INVALID_RELEASE_LIST}"
+ERASING = { args = ["from", "to"], rust_args = ["&str", "&str"], comment = "With --verbose.", text = "Erasing {from} to {to}" }
+WRITING = { args = ["name", "offset"], rust_args = ["&str", "&str"], comment = "With --verbose.", text = "Writing {name} at {offset}" }
+NEXT_DEVICE = "Press any key to commission next device, q to exit..."
+NOT_CONNECTED = { args = ["ssid"], rust_args = ["&str"], text = "Airfrog failed to connect to {ssid}" }
+NOT_CONNECTED_REASON = { args = ["ssid", "reason"], rust_args = ["&str", "&str"], text = "Airfrog failed to connect to {ssid}: {reason}" }
+NETWORK_NOT_FOUND = "network not found"
+WRONG_PASSWORD = "wrong password"
+
+[cli_output.SERIAL]
+comment = "The USB serial adapter connected to Airfrog."
+NO_ADAPTER = "No USB serial adapter was found or specified.\n  Specify a USB serial adapter using --serial-adapter."
+MULTIPLE_ADAPTERS = { args = ["found"], rust_args = ["&str"], text = "Multiple USB serial adapters found.  Use --serial-adapter to select one.\n  Found: {found}" }
+CONFLICT = { args = ["option"], rust_args = ["&str"], comment = "As clap's.", text = "the argument '--serial-adapter <PORT>' cannot be used with '{option}'" }
+PORT_FAILED = { args = ["port", "reason"], rust_args = ["&str", "&str"], text = "Serial port failed: {port}\n  {reason}" }
+NOT_RESPONDING = { args = ["port"], rust_args = ["&str"], text = "Airfrog not responding: {port}\n  Check the serial wiring and that Airfrog is powered." }
+
+[cli_output.PICO]
+NOT_FOUND = "No Pico in BOOTSEL mode found.\n  Hold BOOTSEL while connecting the Pico."
+MULTIPLE = "Multiple Picos in BOOTSEL mode found.\n  Connect only one."
+NO_FIRMWARE = "Pico firmware release not found."
+DOWNLOADING = { args = ["version"], rust_args = ["&str"], text = "Downloading Pico firmware v{version}..." }
+CONFIRM = { args = ["chip", "serial"], rust_args = ["&str", "&str"], text = "This will replace the firmware on device:\n  {chip} - Serial: {serial}\nAre you sure?" }
+
+[cli_output.TARGET_INSPECT]
+TITLE = "{TARGET_CARD.TITLE}"
+MCU = "{TARGET_CARD.MCU}"
+FIRMWARE = "{TARGET_CARD.FIRMWARE}"
+BOARD = "{TARGET_CARD.BOARD}"
+MCU_NO_RESPONSE = "{TARGET_CARD.MCU_NO_RESPONSE}"
+UNKNOWN_MCU = "{VALUES.UNKNOWN}"
+MCU_ID = { args = ["id"], rust_args = ["&str"], text = "{VALUES.TARGET_MCU}" }
+UNKNOWN_FIRMWARE = { args = ["id"], rust_args = ["u32"], text = "{VALUES.FIRMWARE}" }
+FIRMWARE_STATE = { args = ["name", "state"], rust_args = ["&str", "&str"], text = "{name}: {state}" }
+NOT_FOUND = "Not found"
+IDENTIFYING = "{TARGET_STATE.IDENTIFYING}"
+NO_RESPONSE = "{TARGET_CARD.NO_RESPONSE}"
+
+[cli_output.SELF_CMD]
+comment = "airfrog self check and self download, as onerom's."
+MANIFEST = { args = ["url"], rust_args = ["&str"], comment = "With --verbose.", text = "Manifest: {url}" }
+ARCH = { args = ["arch"], rust_args = ["&str"], comment = "With --verbose.", text = "Architecture: {arch}" }
+CURRENT = { args = ["version"], rust_args = ["&str"], text = "Airfrog CLI v{version}" }
+UP_TO_DATE = "This is the latest release."
+AVAILABLE = { args = ["version"], rust_args = ["&str"], text = "A newer release is available: v{version}\n\nDownload it with:\n  airfrog self download\nor from airfrog.org/cli" }
+AHEAD = { args = ["version"], rust_args = ["&str"], text = "This build is newer than the latest release (v{version})." }
+DOWNLOADING = { args = ["version", "arch"], rust_args = ["&str", "&str"], text = "Downloading Airfrog CLI v{version} for {arch} ..." }
+DOWNLOADING_URL = { args = ["url"], rust_args = ["&str"], comment = "With --verbose.", text = "Downloading {url} ..." }
+DOWNLOADED = { args = ["file"], rust_args = ["&str"], text = "Downloaded to {file}" }
+WRITTEN = { args = ["size", "file"], rust_args = ["usize", "&str"], comment = "With --verbose.", text = "Written {size} bytes to {file} (sha256 verified)" }
+INSTALL_DEB = { args = ["file"], rust_args = ["&str"], text = "Install it with:\n  sudo dpkg -i {file}" }
+INSTALL_ZIP = { args = ["file"], rust_args = ["&str"], text = "Unzip {file} and put the airfrog executable on your PATH." }
+ALL_WITH_OUTPUT = "--arch all downloads several files.\n  Use --path to specify a directory."
+UNSUPPORTED_PLATFORM = { args = ["platform", "arches"], rust_args = ["&str", "&str"], text = "No Airfrog CLI build is published for this platform ({platform}).\n  Published architectures: {arches}\n  Specify one with --arch to download it anyway." }
+UNKNOWN_ARCH = { args = ["arch", "arches"], rust_args = ["&str", "&str"], text = "Unknown --arch '{arch}'.\n  Published architectures: {arches}" }
+NOT_IN_RELEASE = { args = ["version", "arch", "arches"], rust_args = ["&str", "&str", "&str"], text = "Airfrog CLI v{version} was not built for '{arch}'.\n  It was built for: {arches}" }
+INVALID_VERSION = { args = ["version", "reason"], rust_args = ["&str", "&str"], text = "Could not parse version '{version}':\n  {reason}" }
+NO_RELEASE = "No latest release found in manifest."
+VERSION_NOT_FOUND = { args = ["version", "versions"], rust_args = ["&str", "&str"], text = "Specified version '{version}' not found.\n  Available releases: {versions}" }
+NO_DIRECTORY = { args = ["dir"], rust_args = ["&str"], text = "Output directory does not exist: {dir}" }
+EXISTS = { args = ["file"], rust_args = ["&str"], text = "File already exists: {file}\n  Use --force to overwrite it." }
+
+[cli_output.RECOVERY]
+DOWNLOADING_RECOVERY = { args = ["version"], rust_args = ["&str"], text = "Downloading recovery firmware v{version}..." }
+REPLACE = "This will temporarily replace the firmware on device:"
+DEVICE = { args = ["device"], rust_args = ["&str"], comment = "One ROM, under REPLACE.", text = "  {device}" }
+CONFIRM = "Are you sure?"
+BACKING_UP = { args = ["dir"], rust_args = ["&str"], text = "Backing up One ROM to {dir}..." }
+READY_REINSTALL = "Ready to reinstall - power cycle One ROM to start"
+READY_ERASE = "Ready to erase settings - power cycle One ROM to start"
+REINSTALLED = "Reinstall succeeded"
+ERASED = "Erase succeeded\n  Use AP mode to set up Airfrog again."
+REINSTALL_FAILED = { args = ["reason"], rust_args = ["&str"], text = "Reinstall failed: {reason}" }
+ERASE_FAILED = { args = ["reason"], rust_args = ["&str"], text = "Erase failed: {reason}" }
+WRONG_MODEL = { comment = "The reasons for each error code.", text = "Airfrog model mismatch" }
+SHA256_MISMATCH = "image SHA-256 mismatch"
+INVALID_FIRMWARE = "invalid Airfrog firmware"
+IMAGE_TOO_LARGE = "image too large"
+ONEROM_UNREADABLE = "One ROM flash not readable"
+WRITE_FAILED = "Airfrog flash write failed"
+ERASE_FAILED_REASON = "Airfrog flash erase failed"
+UNKNOWN_CODE = { args = ["code"], rust_args = ["u32"], text = "unknown error code {code}" }
+NOT_RUN = { comment = "The request's magic is still in One ROM's flash.", text = "no response from Airfrog" }
+RESTORING = { args = ["dir"], rust_args = ["&str"], text = "Restoring One ROM from {dir}..." }
+BACKUP_EXISTS = { args = ["file"], rust_args = ["&str"], text = "File already exists: {file}" }
+RESTORE_COMMAND = { args = ["file", "serial", "board"], rust_args = ["&str", "&str", "&str"], comment = "The command in NOT_RESTORED.", text = "onerom program --serial {serial} --unrecognised --board {board} --firmware {file} --force" }
+NOT_RESTORED = { args = ["dir", "command"], rust_args = ["&str", "&str"], text = "One ROM not restored: {dir}\n  Use '{command}' to restore One ROM." }
+STARTING = "Starting recovery firmware..."
+COMMISSION = "Airfrog ready to be commissioned\n  Use the steps at airfrog.org/commissioning to commission Airfrog."
+NO_RECOVERY_FIRMWARE = "Recovery firmware release not found."
+UNSUPPORTED_BOARD = { args = ["board"], rust_args = ["&str"], text = "Board not supported for recovery: {board}" }
+INVALID_RECOVERY_FIRMWARE = { args = ["file"], rust_args = ["&str"], text = "Invalid recovery firmware file: {file}" }
+TOO_LARGE = { args = ["max", "file"], rust_args = ["&str", "&str"], text = "Firmware file larger than {max}: {file}" }

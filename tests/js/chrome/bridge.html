@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<!-- Stands in for Airfrog's home page in the browser tests: runs bridge.js as
+     Airfrog's full user interface does when its URL has #bridge=. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Airfrog</title></head>
+<body>
+<div id="bridge"></div>
+<script>
+    // Logs each WebSocket's close, for a test that fails
+    window.WebSocket = class extends WebSocket {
+        constructor(...args) {
+            super(...args);
+            this.addEventListener('close', e => console.log(`WebSocket closed ${e.code} ${e.reason}`));
+        }
+    };
+</script>
+<script type="module">
+    import { startBridge } from '/js/bridge.js';
+    window.bridgeStarted = startBridge(document.getElementById('bridge'));
+</script>
+</body>
+</html>

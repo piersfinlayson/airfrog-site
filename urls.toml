@@ -1,0 +1,127 @@
+# The addresses Airfrog's code uses. ci/urls.py reads this file at build time
+# and writes js/urls.js from it.
+#
+# A host entry has a url. Every other entry has a path relative to its host.
+# ci/urls.py check doesn't search for a host entry with check = false.
+# The code that uses an entry fills each {placeholder}:
+# - {release}: a firmware or CLI release, for example 0.2.1
+# - {model}: a released model's key in schema.toml, for example mini
+# - {ui_version}: a version of the full user interface, from ui/ui-version
+# - {js_version}: a version of the client library, from js/js-version
+# - {file}: a file of a CLI release
+
+[AIRFROG_TLD]
+url = "https://airfrog.org/"
+comment = "The Airfrog website"
+
+[ONEROM_TLD]
+url = "https://onerom.org/"
+check = false
+comment = "The One ROM website, whose links pages write in full"
+
+[AIRFROG_IMAGES]
+url = "https://images.airfrog.org/"
+comment = "Airfrog release files"
+
+[AIRFROG_EXTENSIONS]
+url = "https://extensions.airfrog.org/"
+comment = "The Airfrog Extension Repository"
+
+[AIRFROG_RELEASES]
+url = "https://github.com/piersfinlayson/airfrog-v2/releases/download/"
+comment = "The files of airfrog-v2's GitHub releases"
+
+[RECOVERY]
+host = "AIRFROG_TLD"
+path = "recovery"
+comment = "The recovery page"
+
+[MANIFEST_KEY_JS]
+host = "AIRFROG_TLD"
+path = "commissioning/manifest-key.js"
+comment = "airfrog-site's copy of the manifest key's public half, which verifies the manifests"
+
+[FIRMWARE_MANIFEST]
+host = "AIRFROG_IMAGES"
+path = "firmware/manifest.json"
+comment = "The firmware manifest"
+
+[FIRMWARE_RELEASE]
+host = "AIRFROG_IMAGES"
+path = "firmware/airfrog-{model}/v{release}/"
+comment = "A release of a model's firmware"
+
+[FIRMWARE_UPDATE_IMAGE]
+host = "AIRFROG_IMAGES"
+path = "firmware/airfrog-{model}/v{release}/airfrog-{model}.bin"
+comment = "The firmware alone, installed over WiFi"
+
+[FIRMWARE_FACTORY_IMAGE]
+host = "AIRFROG_IMAGES"
+path = "firmware/airfrog-{model}/v{release}/airfrog-{model}.factory.bin"
+comment = "The whole flash of a blank Airfrog in one file, for esptool and browser flashers"
+
+[FIRMWARE_FACTORY_FILES]
+host = "AIRFROG_IMAGES"
+path = "firmware/airfrog-{model}/v{release}/airfrog-{model}.factory/"
+comment = "The factory image as separate files with commission.json, for airfrog.org/commissioning and airfrog commission"
+
+[SETUP_MODULE]
+host = "AIRFROG_IMAGES"
+path = "firmware/airfrog-{model}/v{release}/setup.js"
+comment = "The Airfrog internal JS setup module a firmware release serves"
+
+[SUPPORT_FIRMWARE_MANIFEST]
+host = "AIRFROG_IMAGES"
+path = "support-firmware/manifest.json"
+comment = "The support firmware manifest"
+
+[ONEROM_RECOVERY_FIRMWARE]
+host = "AIRFROG_IMAGES"
+path = "support-firmware/onerom-airfrog-recovery/v{release}/onerom-airfrog-recovery.bin"
+comment = "One ROM's recovery firmware, with its settings block unfilled, for onerom airfrog recovery reinstall and erase-settings"
+
+[ONEROM_SERIAL_RECOVERY_FIRMWARE]
+host = "AIRFROG_IMAGES"
+path = "support-firmware/onerom-airfrog-serial-recovery/v{release}/onerom-airfrog-serial-recovery.bin"
+comment = "One ROM's serial recovery firmware, with its settings block unfilled, for onerom airfrog recovery commission"
+
+[PICO_SERIAL_ADAPTER_FIRMWARE]
+host = "AIRFROG_IMAGES"
+path = "support-firmware/pico-airfrog-serial-adapter/v{release}/pico-airfrog-serial-adapter.uf2"
+comment = "The Pico's serial adapter firmware, for airfrog pico program serial-adapter"
+
+[UI_MANIFEST]
+host = "AIRFROG_IMAGES"
+path = "ui/manifest.json"
+comment = "The UI manifest"
+
+[FULL_UI]
+host = "AIRFROG_IMAGES"
+path = "ui/v{ui_version}/ui.js"
+comment = "The Airfrog full user interface"
+
+[CLIENT_LIBRARY]
+host = "AIRFROG_IMAGES"
+path = "js/v{js_version}/"
+comment = "The client library"
+
+[CLIENT_LIBRARIES]
+host = "AIRFROG_IMAGES"
+path = "js/"
+comment = "The client library's published versions, the Airfrog manifest's js_library"
+
+[CLI_MANIFEST]
+host = "AIRFROG_IMAGES"
+path = "cli/manifest.json"
+comment = "The CLI manifest"
+
+[CLI_RELEASE_FILE]
+host = "AIRFROG_RELEASES"
+path = "cli-v{release}/{file}"
+comment = "A file of an Airfrog CLI release"
+
+[EXTENSIONS_MANIFEST]
+host = "AIRFROG_EXTENSIONS"
+path = "manifest.json"
+comment = "The signed list of extensions"

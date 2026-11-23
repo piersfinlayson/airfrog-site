@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Airfrog commissioning</title>
+<meta name="description" content="Install firmware and connect Airfrog to WiFi.">
+<link rel="icon" type="image/png" href="../images/favicon.png">
+<link rel="stylesheet" href="../site.css">
+<link rel="stylesheet" href="tool.css">
+<script type="module" src="page.js"></script>
+</head>
+<body>
+<div id="header"></div>
+
+<main>
+
+<h1>Commissioning</h1>
+<p class="lede">Commissioning installs the Airfrog firmware on a new Airfrog PCB.
+Airfrogs are normally sold pre-commissioned. This step is usually only required
+if you have your own Airfrog PCBs manufactured.</p>
+
+<div class="split left">
+  <figure><img src="../images/board-j2-tight.svg" alt="Airfrog from above, with J2 marked"></figure>
+  <div>
+    <p>Commissioning is performed using a desktop computer with an adapter connected to Airfrog's J2 connector.</p>
+    <p>The J2 connector does not require a soldered header. Pins from the serial adapter can be wedged in the holes temporarily.</p>
+    <p>The adapter can be:</p>
+    <ul>
+      <li><a href="#adapter">a USB serial adapter</a></li>
+      <li><a href="#pico">a Raspberry Pi Pico or Pico 2</a></li>
+      <li><a href="#onerom">a One ROM Fire</a></li>
+    </ul>
+  </div>
+</div>
+
+<h2 class="section" id="serial">Serial connection</h2>
+
+<h3 class="sub bar" id="adapter">USB serial adapter</h3>
+<p>You must use a 3.3V USB serial adapter. Do not use a 5V USB serial adapter.</p>
+<ol class="steps">
+  <li>Connect the adapter to J2 as follows:
+    <table>
+      <tr><th>Adapter</th><th>J2</th></tr>
+      <tr><td>GND</td><td>GND</td></tr>
+      <tr><td>TX</td><td>RX</td></tr>
+      <tr><td>RX</td><td>TX</td></tr>
+      <tr><td>DTR</td><td>DTR</td></tr>
+      <tr><td>RTS</td><td>RTS</td></tr>
+    </table></li>
+  <li>Connect Airfrog to a microcontroller board using J1 to power it.</li>
+  <li>Follow the <a href="#steps">commissioning steps</a> below.</li>
+</ol>
+
+<h3 class="sub bar" id="pico">Raspberry Pi Pico or Pico 2</h3>
+<p>A Raspberry Pi Pico or Pico 2 is used to power Airfrog and provide the serial connection.</p>
+<ol class="steps">
+  <li>Install the <a href="../cli/">Airfrog CLI</a>.</li>
+  <li>Hold the BOOTSEL button down while connecting the Pico/Pico 2 to your computer, then run
+  <code>airfrog pico program serial-adapter</code>, which flashes USB serial adapter firmware to the Pico/Pico 2.</li>
+  <li>Connect the Pico/Pico 2 to Airfrog as follows:
+    <table>
+      <tr><th>Pico pin</th><th>Airfrog</th></tr>
+      <tr><td>1</td><td>J2 RX</td></tr>
+      <tr><td>2</td><td>J2 TX</td></tr>
+      <tr><td>3</td><td>J2 GND</td></tr>
+      <tr><td>4</td><td>J2 DTR</td></tr>
+      <tr><td>5</td><td>J2 RTS</td></tr>
+      <tr><td>40</td><td>J1 pin 2</td></tr>
+    </table></li>
+  <li>Follow the <a href="#steps">commissioning steps</a> below.</li>
+</ol>
+
+<h3 class="sub bar" id="onerom">One ROM Fire</h3>
+<p>Any USB model of <a href="https://onerom.org/">One ROM</a> Fire can be used as a USB serial adapter.</p>
+<ol class="steps">
+  <li>Remove One ROM if it is installed in a machine.</li>
+  <li>Install the <a href="https://onerom.org/cli/">One ROM CLI</a>.</li>
+  <li>Plug Airfrog onto One ROM and connect One ROM legs to Airfrog as follows:
+    <table>
+      <tr><th>One ROM</th><th>J2</th></tr>
+      <tr><td>Leg/pin 1</td><td>RX</td></tr>
+      <tr><td>Leg/pin 2</td><td>TX</td></tr>
+      <tr><td>Leg/pin 3</td><td>DTR</td></tr>
+      <tr><td>Leg/pin 4</td><td>RTS</td></tr>
+    </table></li>
+  <li>Connect One ROM to your computer via USB and run
+  <code>onerom airfrog recovery commission</code>, which temporarily turns One ROM into a USB serial adapter.</li>
+  <li>Follow the <a href="#steps">commissioning steps</a> below.</li>
+  <li>Unplug One ROM to return it to normal operation.</li>
+</ol>
+
+<h2 class="section" id="steps">Commissioning steps</h2>
+<p>In the commissioning tool below:</p>
+<ol class="steps">
+  <li>Select Connect and choose the serial port.</li>
+  <li>Install firmware, then Install.</li>
+  <li>Optionally: once the firmware is installed you can set up Airfrog's WiFi and other settings, or follow the instructions in <a href="../getting-started/">Getting started</a>.</li>
+</ol>
+<div class="tool">
+
+<section class="card warn" id="no-serial" data-text="COMMISSIONING.NO_SERIAL" hidden></section>
+
+<section class="card" id="connect-card">
+  <div class="card-head"><h2 data-text="COMMISSIONING_CONNECT.CONNECT"></h2><span class="pill" id="connect-pill" hidden></span></div>
+  <div class="stack">
+    <p class="note"><span data-text="COMMISSIONING_CONNECT.WIRING"></span><span class="tip"
+      data-text="COMMISSIONING_CONNECT.WIRING_TIP"></span></p>
+    <div class="row"><button type="button" class="primary" id="connect" data-text="COMMISSIONING_CONNECT.CONNECT" disabled></button></div>
+    <dl class="kv" id="chip" hidden>
+      <dt data-text="ABOUT.MCU"></dt><dd id="chip-name"></dd>
+      <dt data-text="ABOUT.FLASH"></dt><dd id="chip-flash"></dd>
+      <dt id="chip-psram-label" data-text="ABOUT.PSRAM"></dt><dd id="chip-psram"></dd>
+    </dl>
+    <progress id="connect-progress" hidden></progress>
+    <div class="msg" id="connect-msg" role="status"></div>
+  </div>
+</section>
+
+<section class="card" id="firmware-card">
+  <div class="card-head"><h2 data-text="UPDATE.TITLE"></h2><span class="pill" id="firmware-pill" hidden></span></div>
+  <div class="stack">
+    <label><span data-text="ABOUT.MODEL"></span><select id="model" disabled></select></label>
+    <label><span data-text="COMMISSIONING_FIRMWARE.RELEASE"></span><select id="release" disabled></select></label>
+    <div class="row" id="install-row">
+      <button type="button" class="primary" id="install" data-text="COMMISSIONING_FIRMWARE.INSTALL_FIRMWARE"
+        disabled></button><span class="tip" data-text="COMMISSIONING_FIRMWARE.INSTALL_TIP"></span>
+      <button type="button" id="keep" data-text="COMMISSIONING_FIRMWARE.KEEP" disabled></button><span class="tip"
+        data-text="COMMISSIONING_FIRMWARE.KEEP_TIP"></span>
+    </div>
+    <progress id="firmware-progress" max="1" hidden></progress>
+    <div class="msg" id="firmware-msg" role="status"></div>
+  </div>
+</section>
+
+<div id="setup"></div>
+
+<section class="card" id="done-card" hidden>
+  <div class="card-head"><h2 data-text="COMMISSIONING_DONE.TITLE"></h2></div>
+  <div class="stack">
+    <dl class="kv">
+      <dt data-text="COMMISSIONING_DONE.HOME_PAGE"></dt><dd><a id="url" target="_blank" rel="noopener"></a></dd>
+      <dt data-text="NETWORK.WIFI_TITLE"></dt><dd id="wifi"></dd>
+      <dt data-text="NETWORK.IP_ADDRESS"></dt><dd id="ip"></dd>
+    </dl>
+    <div class="msg" id="done-msg" role="status"></div>
+  </div>
+</section>
+
+<details>
+<summary data-text="COMMISSIONING.LOG"></summary>
+<pre class="log" id="log"></pre>
+</details>
+
+</div>
+
+<h2 class="section" id="command-line">Command line</h2>
+<p>Alternatively, the <a href="../cli/">Airfrog CLI</a> can be used to commission Airfrog:</p>
+<pre><code>airfrog commission</code></pre>
+
+</main>
+
+<div id="footer"></div>
+<script src="/js/site/header.js"></script>
+<script src="/js/site/footer.js"></script>
+</body>
+</html>

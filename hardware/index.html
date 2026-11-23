@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Airfrog hardware</title>
+<meta name="description" content="Airfrog boards and what differs between them.">
+<link rel="icon" type="image/png" href="../images/favicon.png">
+<link rel="stylesheet" href="../site.css">
+</head>
+<body>
+<div id="header"></div>
+
+<main>
+
+<h1>Hardware</h1>
+<ul>
+  <li><a href="#models">Models</a></li>
+  <li><a href="#layout">Layout</a></li>
+  <li><a href="#pcb-designs">PCB designs</a></li>
+</ul>
+
+<h2 class="section" id="models">Models</h2>
+<div class="scroll">
+<table class="hw">
+  <tr><th>Board</th><th>WiFi module</th><th>CPU</th><th>Flash</th><th>RAM</th><th>PSRAM</th><th>Size</th></tr>
+  <tr><td>Airfrog Mini</td><td>ESP32-C3-MINI-1</td><td>RISC-V, 160 MHz</td><td>4 MB</td><td>400 KB</td><td>-</td><td>18.0 × 26.0 mm</td></tr>
+  <tr><td>Airfrog Pro</td><td>ESP32-S3-MINI-1-N4R2</td><td>2 × Xtensa LX7, 240 MHz</td><td>4 MB</td><td>512 KB</td><td>2 MB</td><td>18.4 × 30.3 mm</td></tr>
+</table>
+</div>
+
+<div class="renders">
+  <figure><img src="../images/render-top.png" width="153" alt="Airfrog Mini from above"><figcaption>Airfrog Mini</figcaption></figure>
+  <figure><img src="../images/render-pro-top.png" width="157" alt="Airfrog Pro from above"><figcaption>Airfrog Pro</figcaption></figure>
+</div>
+
+<h2 class="section" id="layout">Layout</h2>
+
+<div class="renders">
+  <figure><img src="../images/board-j1.svg" width="280" alt="Airfrog from above, with J1 marked"></figure>
+  <figure><img src="../images/board-j2.svg" width="280" alt="Airfrog from above, with J2 marked"></figure>
+  <figure><img src="../images/board-leds.svg" width="318" alt="Airfrog from above, with the RGB LED and status LED marked"></figure>
+</div>
+
+<h3 class="sub" id="j1">J1</h3>
+<table>
+  <tr><th>Pin</th><th>One ROM Fire</th><th>Pico</th><th>Pico 2</th><th>Blue Pill</th><th>Black Pill</th><th>Airfrog Mini GPIO</th><th>Airfrog Pro GPIO</th></tr>
+  <tr><td>1</td><td>GND</td><td>GND</td><td>GND</td><td>GND</td><td>GND</td><td>-</td><td>-</td></tr>
+  <tr><td>2</td><td>5 V</td><td>VSYS</td><td>VSYS</td><td>5 V</td><td>5 V</td><td>-</td><td>-</td></tr>
+  <tr><td>3</td><td>SWDIO, SEL_D</td><td>SWDIO</td><td>SWDIO</td><td>SWDIO</td><td>SWDIO</td><td>5</td><td>17</td></tr>
+  <tr><td>4</td><td>RUN</td><td>RUN</td><td>RUN</td><td>NRST</td><td>NRST</td><td>7</td><td>21</td></tr>
+  <tr><td>5</td><td>SWCLK, SEL_C</td><td>SWCLK</td><td>SWCLK</td><td>SWCLK</td><td>SWCLK</td><td>6</td><td>15</td></tr>
+  <tr><td>6</td><td>BOOTSEL</td><td>BOOTSEL test point</td><td>BOOTSEL test point</td><td>-</td><td>-</td><td>4</td><td>16</td></tr>
+  <tr><td>7</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>3</td><td>47</td></tr>
+  <tr><td>8</td><td>SEL_B</td><td>-</td><td>-</td><td>-</td><td>-</td><td>1</td><td>14</td></tr>
+  <tr><td>9</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>18</td><td>18</td></tr>
+  <tr><td>10</td><td>SEL_A</td><td>-</td><td>-</td><td>-</td><td>-</td><td>0</td><td>13</td></tr>
+</table>
+
+<h3 class="sub" id="j2">J2</h3>
+<table>
+  <tr><th>Pin</th><th>Signal</th><th>Airfrog Mini GPIO</th><th>Airfrog Pro GPIO</th></tr>
+  <tr><td>1</td><td>GND</td><td>-</td><td>-</td></tr>
+  <tr><td>2</td><td>Same as J1-3</td><td>5</td><td>17</td></tr>
+  <tr><td>3</td><td>Same as J1-5</td><td>6</td><td>15</td></tr>
+  <tr><td>4</td><td>DTR</td><td>-</td><td>-</td></tr>
+  <tr><td>5</td><td>RTS</td><td>-</td><td>-</td></tr>
+  <tr><td>6</td><td>BOOT</td><td>9</td><td>0</td></tr>
+  <tr><td>7</td><td>RXD0</td><td>20</td><td>44</td></tr>
+  <tr><td>8</td><td>TXD0</td><td>21</td><td>43</td></tr>
+  <tr><td>9</td><td>EN</td><td>EN</td><td>EN</td></tr>
+</table>
+
+<h2 class="section" id="pcb-designs">PCB designs</h2>
+<p>Schematics, KiCad projects and fabrication files are in <a href="https://github.com/piersfinlayson/airfrog-pcb">airfrog-pcb</a>.</p>
+
+</main>
+
+<div id="footer"></div>
+<script src="/js/site/header.js"></script>
+<script src="/js/site/footer.js"></script>
+</body>
+</html>

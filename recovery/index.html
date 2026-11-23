@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Airfrog recovery</title>
+<meta name="description" content="Fix problems with Airfrog.">
+<link rel="icon" type="image/png" href="../images/favicon.png">
+<link rel="stylesheet" href="../site.css">
+</head>
+<body>
+<div id="header"></div>
+
+<main>
+
+<h1>Recovery</h1>
+
+<h2 id="connection">Connection problems</h2>
+<ol class="steps">
+  <li>Check your microcontroller board is powered and Airfrog's status LED is lit.</li>
+  <li>Open <a href="http://airfrog.local/">http://airfrog.local/</a>, or http://HOSTNAME.local/ if you
+  changed the hostname. If your device can't open .local addresses, use the Airfrog IP address from the
+  list of connected devices on your router.</li>
+  <li>If Airfrog can't join your WiFi network for 10 minutes, it starts the <code>airfrog-XXXX</code> WiFi
+  network. Join with password <code>airfrogx</code>, open
+  <a href="http://192.168.4.1/">http://192.168.4.1/</a> and update the WiFi settings.</li>
+</ol>
+<p>If you still can't connect to Airfrog, start it in <a href="#recovery-mode">recovery mode</a>. If that doesn't
+help, <a href="#factory-defaults">restore factory defaults</a>.</p>
+
+<h2 id="recovery-mode">Recovery mode</h2>
+<div class="split fit">
+  <div>
+    <p>In recovery mode Airfrog starts with extensions disabled.</p>
+    <ol class="steps">
+      <li>Hold the recovery button down and power the microcontroller board attached to Airfrog.</li>
+      <li>The status LED starts to blink slowly. Release the button within 10 seconds.</li>
+      <li>Try removing extensions one by one and restarting Airfrog normally.</li>
+    </ol>
+  </div>
+  <figure><img src="../images/board-button.svg" alt="Airfrog from above, with the recovery button marked"></figure>
+</div>
+
+<h2 id="factory-defaults">Factory defaults</h2>
+<p>Restoring factory defaults erases all of your settings and extensions.</p>
+<ol class="steps">
+  <li>Hold the recovery button down and power the microcontroller board attached to Airfrog.</li>
+  <li>The status LED starts to blink slowly. Keep the button down for more than 10 seconds until the LED
+  starts blinking quickly. Then release it.</li>
+  <li>Airfrog will reboot with its default settings. Re-configure WiFi as described in <a href="../getting-started/#wifi">Getting started</a>.</li>
+</ol>
+
+<h2 id="commissioning">Commissioning</h2>
+<p>If the above steps don't recover your Airfrog, <a href="../commissioning/">re-commission</a> it.</p>
+
+</main>
+
+<div id="footer"></div>
+<script src="/js/site/header.js"></script>
+<script src="/js/site/footer.js"></script>
+</body>
+</html>

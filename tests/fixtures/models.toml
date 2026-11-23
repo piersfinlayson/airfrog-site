@@ -1,0 +1,15 @@
+# Test models, added to schema.toml's [[models]] by `ci/schema.py --test`.
+# Each name has a space, so the tests check the key, the constants and the
+# file names derived from such a name.
+
+[[models]]
+value = 98
+name = "Mini v2"
+chip = "ESP32C3"
+released = true
+
+[[models]]
+value = 99
+name = "Pro v2"
+chip = "ESP32S3"
+released = false

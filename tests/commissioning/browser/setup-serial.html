@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Airfrog setup over serial</title>
+</head>
+<body>
+<main><div id="setup"></div></main>
+<script type="module">
+// Airfrog's internal JS setup module as bundled, build/setup/setup.js, over serial against the fake
+// Airfrog, as airfrog.org/commissioning runs it once Airfrog's firmware runs.
+// tests/js/chrome/setup-serial.test.mjs drives it. With ?fail=REASON Airfrog has
+// saved static settings and never joins.
+import { FakeAirfrog, pipe } from '../fake-airfrog.mjs';
+
+const setup = await import('/build/setup/setup.js');
+const [client, airfrog] = pipe();
+const fail = Number(new URLSearchParams(location.search).get('fail') ?? 0);
+const wifi = fail
+    ? { mode: 1, ssid: 'bench-net', password: 'wifi-secret',
+        ipv4: new Uint8Array([192, 168, 1, 60, 255, 255, 255, 0, 192, 168, 1, 254, 0, 0, 0, 0]) }
+    : { mode: 0, ssid: 'bench-net', password: 'wifi-secret', ipv4: new Uint8Array(16) };
+window.fake = new FakeAirfrog(airfrog, { joinAfter: fail ? Infinity : 1, failReason: fail, scanPolls: 1,
+    saved: { hostname: 'bench', wifi } });
+const serial = new setup.SerialClient(client);
+const hello = await serial.hello({ interval: 10 });
+window.setup = await setup.mountSerial(document.getElementById('setup'), new setup.SerialTransport(serial, hello));
+window.ready = true;
+</script>
+</body>
+</html>

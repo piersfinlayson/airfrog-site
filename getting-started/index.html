@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started with Airfrog</title>
+<meta name="description" content="Connect Airfrog to a microcontroller board and your WiFi network.">
+<link rel="icon" type="image/png" href="../images/favicon.png">
+<link rel="stylesheet" href="../site.css">
+</head>
+<body>
+<div id="header"></div>
+
+<main>
+
+<h1>Getting started</h1>
+<p class="lede">Most Airfrogs are sold with the firmware pre-installed. <a href="../commissioning/">Commission</a> an Airfrog without firmware and then:</p>
+<ol class="steps">
+  <li><a href="#board">Connect the microcontroller board</a></li>
+  <li><a href="#wifi">Set up WiFi networking</a></li>
+  <li><a href="#home-page">Load the Airfrog home page</a></li>
+</ol>
+
+<h2 class="section" id="board"><span class="num">1</span>Microcontroller board</h2>
+<p>Follow the steps for your board.</p>
+
+<h3 class="sub bar" id="onerom">One ROM Fire</h3>
+<div class="split">
+  <div>
+    <p><a href="https://onerom.org/">One ROM</a> is the most flexible ROM replacement for your retro system.</p>
+    <p>Plug Airfrog onto the One ROM header, with the Airfrog antenna above the ROM body.</p>
+    <p class="warn"><strong>Warning:</strong> plugging Airfrog into One ROM the wrong way round can damage both devices.</p>
+    <p>Airfrog automatically detects a connected One ROM.</p>
+  </div>
+  <figure><img src="../images/airfrog-on-one-rom.png" alt="Airfrog plugged onto a One ROM Fire, with the antenna above the ROM body"></figure>
+</div>
+
+<h3 class="sub bar" id="other-boards">Other boards</h3>
+<div class="split">
+  <div>
+    <p>Connect Airfrog to the board with jumper wires:</p>
+    <table>
+      <tr><th>J1 pin</th><th>Pico</th><th>Pico 2</th><th>Blue Pill</th><th>Black Pill</th></tr>
+      <tr><td>1</td><td>GND</td><td>GND</td><td>GND</td><td>GND</td></tr>
+      <tr><td>2</td><td>VSYS</td><td>VSYS</td><td>5 V</td><td>5 V</td></tr>
+      <tr><td>3</td><td>SWDIO</td><td>SWDIO</td><td>SWDIO</td><td>SWDIO</td></tr>
+      <tr><td>4</td><td>RUN</td><td>RUN</td><td>NRST</td><td>NRST</td></tr>
+      <tr><td>5</td><td>SWCLK</td><td>SWCLK</td><td>SWCLK</td><td>SWCLK</td></tr>
+      <tr><td>6</td><td>BOOTSEL test point</td><td>BOOTSEL test point</td><td></td><td></td></tr>
+    </table>
+    <p>Choose the board in Airfrog's Target settings once Airfrog is on your network.</p>
+  </div>
+  <figure><img src="../images/board-j1.svg" alt="Airfrog from above, with J1 and J1-1 marked"></figure>
+</div>
+
+<h2 class="section" id="wifi"><span class="num">2</span>WiFi network</h2>
+<ol>
+  <li>Power the board Airfrog is attached to, which in turn powers Airfrog.</li>
+  <li>Wait a few seconds, then join <code>airfrog-XXXX</code> from a phone or computer.  The default password is <code>airfrogx</code>.</li>
+  <li>Open <a href="http://192.168.4.1/">http://192.168.4.1/</a>. Many devices open the page automatically when they connect.</li>
+  <li>Enter your WiFi network credentials and select <code>Save and connect</code>.</li>
+</ol>
+<p>Airfrog joins your network and the page displays Airfrog's IP address.</p>
+
+<h2 class="section" id="home-page"><span class="num">3</span>Airfrog home page</h2>
+<ol>
+  <li>Disconnect from Airfrog and re-join your own network.</li>
+  <li>Open the Airfrog home page at <a href="http://airfrog.local/">http://airfrog.local/</a>, or at Airfrog's IP address.</li>
+</ol>
+
+<h2 class="section" id="problems">Problems</h2>
+<p>If <code>airfrog-XXXX</code> doesn't appear or you can't connect to Airfrog, see
+<a href="../recovery/">Recovery</a>.</p>
+
+</main>
+
+<div id="footer"></div>
+<script src="/js/site/header.js"></script>
+<script src="/js/site/footer.js"></script>
+</body>
+</html>
