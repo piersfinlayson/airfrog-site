@@ -7,14 +7,14 @@
 // { field, message }, and fields is set only when errors is empty.
 
 import { BOOT_WINDOW_AUTO, BOOT_WINDOW_MAX_MS, RESCAN_DB_MAX, RESCAN_MIN_S, encodeAuthorisedWebsite,
-    encodeHostAliases, encodeHostname, encodeSetWifiSta, encodeSettings } from './protocol.js';
+    encodeHostAliases, encodeHostname, encodeSetWifiAp, encodeSetWifiSta, encodeSettings } from './protocol.js';
 import { utf8 } from './bytes.js';
 import {
-    AUTHORISED_WEBSITE_MAX, HOSTNAME_MAX, HOST_ALIASES_MAX as MAX_ALIASES, HOST_ALIAS_MAX, LABEL_MAX,
+    AUTHORISED_WEBSITE_MAX, HOSTNAME_MAX, HOST_ALIASES_MAX as MAX_ALIASES, HOST_ALIAS_MAX, LABEL_MAX, PASSWORD_MIN,
     SETTINGS_BOARD_MAX, SETTINGS_CHANGE_CHECK_MS_MAX, SETTINGS_WIFI_RESCAN_S_MAX, SSID_MAX, WIFI_PASSWORD_MAX,
     WIFI_PASSWORD_MIN,
 } from '../schema.js';
-import { AUTHORISED_WEBSITES, NETWORK, PASSWORD, TARGET_SETTINGS } from '../messages.js';
+import { AUTHORISED_WEBSITES, NETWORK, PASSWORD, PASSWORD_RULE, TARGET_SETTINGS, WIFI_AP } from '../messages.js';
 
 const HOSTNAME = new RegExp(`^[A-Za-z0-9]([A-Za-z0-9-]{0,${HOSTNAME_MAX - 2}}[A-Za-z0-9])?$`);
 const ALIAS_LABELS = new RegExp(`^[A-Za-z0-9-]{1,${LABEL_MAX}}(\\.[A-Za-z0-9-]{1,${LABEL_MAX}})*$`);
@@ -139,6 +139,19 @@ export function checkWebsite(text) {
 }
 
 /**
+ * Whether password follows the password rule, PASSWORD_RULE: at least
+ * PASSWORD_MIN characters, including an upper case letter, a lower case
+ * letter and a number. Characters are code points, and the classes are
+ * Unicode's Uppercase, Lowercase and Number, as Rust's char::is_uppercase,
+ * is_lowercase and is_numeric in the airfrog CLI.
+ * @param {string} password
+ */
+export function followsRule(password) {
+    return [...password].length >= PASSWORD_MIN && /\p{Uppercase}/u.test(password)
+        && /\p{Lowercase}/u.test(password) && /\p{N}/u.test(password);
+}
+
+/**
  * Airfrog's new password, entered twice.
  * @param {string} password
  * @param {string} repeat
@@ -148,10 +161,30 @@ export function checkNewPassword(password, repeat) {
     if (!password) {
         return [{ field: 'password', message: PASSWORD.ENTER_NEW }];
     }
+    if (!followsRule(password)) {
+        return [{ field: 'password', message: PASSWORD_RULE.NOT_MET }];
+    }
     if (password !== repeat) {
         return [{ field: 'repeat', message: PASSWORD.NOT_MATCHING }];
     }
     return [];
+}
+
+/**
+ * The access point's new name and password.
+ * @param {string} ssid
+ * @param {string} password
+ * @returns {{errors: Array, fields: Uint8Array|null}} SET_WIFI_AP's fields
+ */
+export function checkWifiAp(ssid, password) {
+    const errors = [];
+    if (bytes(ssid) < 1 || bytes(ssid) > SSID_MAX) {
+        errors.push({ field: 'apSsid', message: NETWORK.INVALID_SSID });
+    }
+    if (bytes(password) < WIFI_PASSWORD_MIN || bytes(password) > WIFI_PASSWORD_MAX) {
+        errors.push({ field: 'apPassword', message: WIFI_AP.INVALID_PASSWORD });
+    }
+    return result(errors, errors.length ? null : encodeSetWifiAp(ssid, password));
 }
 
 /**

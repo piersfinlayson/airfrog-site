@@ -44,6 +44,10 @@ export function targetPayload(t) {
         u16(t.services.length * 4), ...t.services.map(([s, o]) => Buffer.concat([u16(s), u16(o)]))]);
 }
 
+/** HELLO's release key and manifest_url by default. */
+export const TEST_KEY = Buffer.alloc(32, 0x11);
+export const TEST_MANIFEST = 'https://manifest.test/manifest.json';
+
 const hmac = (key, ...parts) => {
     const h = crypto.createHmac('sha256', key);
     parts.forEach(p => h.update(p));
@@ -53,7 +57,9 @@ const hmac = (key, ...parts) => {
 export class FakeAirfrog {
     constructor(config = {}) {
         this.config = {
-            password: null, iterations: 1000, maxTransfer: 4096, revision: 1,
+            password: null, iterations: 100000, maxTransfer: 4096, revision: 1,
+            // HELLO's interface, release keys and manifest_url
+            interface: 0, keys: [TEST_KEY], manifestUrl: TEST_MANIFEST,
             target: TARGETS.bootRom, busyClaims: 0, busyHolder: '',
             websites: ['https://onerom.org'],
             ...config,
@@ -131,6 +137,8 @@ class Session {
         this.loggedIn = false;
         this.closed = false;
         this.ns = crypto.randomBytes(16);
+        // Each connection's number, in the order they open
+        this.id = (fake.opened = (fake.opened ?? 0) + 1);
     }
 
     start() {
@@ -139,8 +147,10 @@ class Session {
             this.loggedIn = true;
             return;
         }
+        const url = Buffer.from(c.manifestUrl);
         const hello = Buffer.concat([u16(c.revision), u16(c.password ? 1 : 0), u32(c.maxTransfer),
-            c.password ? this.ns : Buffer.alloc(16), c.password ? this.fake.salt : Buffer.alloc(16), u32(c.iterations)]);
+            c.password ? this.ns : Buffer.alloc(16), c.password ? this.fake.salt : Buffer.alloc(16), u32(c.iterations),
+            u16(c.interface), u16(c.keys.length), ...c.keys, u16(url.length), url]);
         this.send(HELLO, hello);
         if (!c.password) {
             this.loggedIn = true;
@@ -216,7 +226,7 @@ class Session {
             ({ type } = message);
             payload = Buffer.from(message.payload);
         }
-        this.fake.received.push({ type, payload });
+        this.fake.received.push({ type, payload, session: this.id });
         if (this.loggedIn && this.fake.config.oneRequest) {
             // A second request before the response closes the connection.
             if (this.waiting) return this.close(4000);
@@ -234,6 +244,10 @@ class Session {
     handle(type, payload) {
         const fake = this.fake;
         if (!this.loggedIn) {
+            // SET_PASSWORD before LOGIN, allowed over the recovery button's access point
+            if (type === AIRFROG_CMD && payload.readUInt16LE(0) === 0x06) {
+                return fake.config.interface === 4 ? this.setPassword(payload.subarray(2)) : this.error(20);
+            }
             if (type !== LOGIN || payload.length !== 48) return this.close(4000);
             if (fake.config.blockSeconds) return this.close(4007, String(fake.config.blockSeconds));
             const nc = payload.subarray(0, 16);
@@ -278,6 +292,12 @@ class Session {
                 }
                 if (fake.config.airfrogCmdError) return this.error(fake.config.airfrogCmdError);
                 if (payload.readUInt16LE(0) === 0x06) return this.setPassword(payload.subarray(2));
+                if (payload.readUInt16LE(0) === 0x24) return this.setWifiAp(payload.subarray(2));
+                if (payload.readUInt16LE(0) === 0x04) {
+                    const ssid = Buffer.from(fake.wifiAp?.ssid ?? 'airfrog-1a2b');
+                    return this.respond(AIRFROG_CMD, Buffer.concat([u16(1), u16(1), Buffer.from([192, 168, 4, 1]),
+                        Buffer.alloc(16), u16(ssid.length), ssid]));
+                }
                 // GET_EXTENSIONS, with fake.config.extensions its response
                 if (payload.readUInt16LE(0) === 0x17 && fake.config.extensions) {
                     return this.respond(AIRFROG_CMD, fake.config.extensions);
@@ -327,16 +347,33 @@ class Session {
         return this.respond(AIRFROG_CMD, Buffer.alloc(0));
     }
 
-    /** SET_PASSWORD: K and its salt, or zeros to remove the password. */
+    /**
+     * SET_PASSWORD: K and its salt, or zeros to remove the password. On a
+     * logged-in connection K is XORed with HMAC-SHA256(S, 'password' ‖ salt).
+     */
     setPassword(fields) {
         const fake = this.fake;
         if (fields.length !== 48) return this.close(4000);
-        const removed = fields.every(b => b === 0);
+        const salt = fields.subarray(32);
+        const pad = this.key ? hmac(this.key, Buffer.from('password'), salt) : Buffer.alloc(32);
+        fake.sentKey = Buffer.from(fields.subarray(0, 32));
+        const key = Buffer.from(fields.subarray(0, 32).map((b, i) => b ^ pad[i]));
+        const removed = key.every(b => b === 0);
         fake.config.password = removed ? null : 'set';
-        fake.key = removed ? null : Buffer.from(fields.subarray(0, 32));
+        fake.key = removed ? null : key;
         fake.salt = removed ? crypto.randomBytes(16) : Buffer.from(fields.subarray(32));
         this.respond(AIRFROG_CMD, Buffer.alloc(0));
         for (const s of [...fake.sessions]) s.close(4003);
+    }
+
+    /** SET_WIFI_AP: allowed only over the access point. */
+    setWifiAp(fields) {
+        if (![2, 3, 4].includes(this.fake.config.interface)) return this.error(20);
+        const ssidLen = fields.readUInt16LE(0);
+        const ssid = fields.subarray(2, 2 + ssidLen).toString();
+        const password = fields.subarray(4 + ssidLen, 4 + ssidLen + fields.readUInt16LE(2 + ssidLen)).toString();
+        this.fake.wifiAp = { ssid, password };
+        return this.respond(AIRFROG_CMD, Buffer.alloc(0));
     }
 
     /** SWD_MEMORY's READ (1) and WRITE (2). Memory that isn't written reads as the low byte of its address. */

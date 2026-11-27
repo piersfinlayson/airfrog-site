@@ -3,7 +3,7 @@
 // MIT License
 
 // airfrog.org/cli's downloads, from the Airfrog manifest and the CLI manifest
-// signed with airfrog-v2's test key.
+// signed with the test key 'release' (tests/ui/minisign.mjs).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +16,7 @@ const AIRFROG_URL = 'https://meta.test/airfrog/manifest.json';
 const CLI_URL = 'https://images.test/cli/manifest.json';
 const WINDOWS = 'x86_64-pc-windows-msvc';
 const MACOS = 'universal-apple-darwin';
-const AIRFROG = { type: 'airfrog', version: 1, cli_manifest: CLI_URL };
+const AIRFROG = { type: 'airfrog', version: 1, cli_manifest: { url: CLI_URL, key: TEST_KEY } };
 const platform = (target, version) => ({ target, url: `https://files.test/cli-v${version}/airfrog-${version}-${target}.zip`,
   size: 1, sha256: 'ab'.repeat(32) });
 const cli = () => ({
@@ -26,8 +26,8 @@ const cli = () => ({
 });
 
 /** latestDownloads() with the manifests served, body's signature made from signed(body). */
-function load(manifests, { signed = (url, body) => body, key = TEST_KEY } = {}) {
-  return latestDownloads(AIRFROG_URL, key, { fetch: async (url) => {
+function load(manifests, { signed = (url, body) => body, keys = [TEST_KEY] } = {}) {
+  return latestDownloads(AIRFROG_URL, keys, { fetch: async (url) => {
     const at = url.replace(/\.minisig$/, '');
     if (!manifests[at]) return new Response('', { status: 404 });
     const body = Buffer.from(JSON.stringify(manifests[at]));
@@ -52,6 +52,7 @@ test("manifests that don't verify", async () => {
   const invalid = [
     { ...good, [AIRFROG_URL]: { ...AIRFROG, type: 'ui' } },
     { ...good, [AIRFROG_URL]: { ...AIRFROG, cli_manifest: undefined } },
+    { ...good, [AIRFROG_URL]: { ...AIRFROG, cli_manifest: CLI_URL } },
     { ...good, [CLI_URL]: { ...cli(), type: 'firmware' } },
     { ...good, [CLI_URL]: { ...cli(), latest: undefined } },
     { ...good, [CLI_URL]: { ...cli(), releases: {} } },
@@ -62,5 +63,5 @@ test("manifests that don't verify", async () => {
     await assert.rejects(load(manifests), { message: RELEASE_LIST.INVALID }, `case ${i}`);
   }
   await assert.rejects(load({ [AIRFROG_URL]: AIRFROG }), ReleaseError);
-  await assert.rejects(load(good, { key: '' }), { message: COMMISSIONING_FIRMWARE.MANIFEST_KEY_NOT_SET });
+  await assert.rejects(load(good, { keys: [] }), { message: COMMISSIONING_FIRMWARE.RELEASE_KEYS_NOT_SET });
 });

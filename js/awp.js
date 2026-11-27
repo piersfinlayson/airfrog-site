@@ -13,9 +13,10 @@ import {
     CLOSE_NETWORK_SETTINGS_CHANGED, CLOSE_PASSWORD_CHANGED, CLOSE_PROTOCOL_ERROR, CLOSE_TOO_MANY_CONNECTIONS,
     COUNTER_OFFSET, DIRECTION_AIRFROG, DIRECTION_CLIENT, ERROR, ERROR_BUSY, ERROR_EXTENSION_INVALID,
     ERROR_EXTENSION_UNSUPPORTED, ERROR_IMAGE_INVALID, ERROR_INSTALL_IN_PROGRESS, ERROR_MEMORY_FAULT, ERROR_NOT_CLAIMED,
-    ERROR_NOT_OFFERED, ERROR_NOT_RUNNING, ERROR_NO_SPACE, ERROR_OUT_OF_RANGE, ERROR_RESTARTING, ERROR_TRANSFER_FAILED,
+    ERROR_NOT_OFFERED, ERROR_NOT_PERMITTED, ERROR_NOT_RUNNING, ERROR_NO_SPACE, ERROR_OUT_OF_RANGE, ERROR_RESTARTING,
+    ERROR_SIGNATURE_INVALID, ERROR_TRANSFER_FAILED,
     EXT_CMD, EXT_NOTIFY, FLAGS_OFFSET, FLAG_PASSWORD, FW_FLAG_RUNNING, HEADER_LEN, HEADER_RESPONSE, HELLO, HMAC_LEN,
-    HMAC_OFFSET, IDENTIFY, LOGIN, LOGIN_LABEL, MESSAGE_TYPES, NONCE_LEN,
+    HMAC_OFFSET, IDENTIFY, LOGIN, LOGIN_LABEL, MESSAGE_TYPES, MIN_ITERATIONS, NONCE_LEN,
     PATH, PROOF_LABEL, PROOF_LEN, RELEASE, SESSION_LABEL, STATE_IDENTIFIED, SUBPROTOCOL, TARGET, TARGET_CMD,
     TYPE_OFFSET, decodeBusy, decodeError, decodeHello, decodeTarget, encodeLogin, messageTypeName,
 } from './schema.js';
@@ -69,6 +70,8 @@ export function hex(type) {
  * - IO: sending failed after the connection opened
  * - TIMEOUT: Airfrog didn't respond in time. The connection is closed
  * - PASSWORD_REQUIRED, LOGIN_FAILED, LOGIN_BLOCKED, PROOF_MISMATCH
+ * - ITERATIONS_TOO_LOW: Airfrog has a password and HELLO's iterations is
+ *   below MIN_ITERATIONS, so the client doesn't log in
  * - PASSWORD_CHANGED, PROTOCOL_ERROR, BAD_COUNTER_OR_HMAC,
  *   TOO_MANY_CONNECTIONS, LOGIN_TIMEOUT, NETWORK_SETTINGS_CHANGED: Airfrog
  *   closed the connection with that close code
@@ -78,16 +81,20 @@ export function hex(type) {
  *   left open
  * - BUSY, NOT_CLAIMED, NOT_OFFERED, TRANSFER_FAILED, NOT_RUNNING,
  *   MEMORY_FAULT, OUT_OF_RANGE, INSTALL_IN_PROGRESS, EXTENSION_INVALID,
- *   EXTENSION_UNSUPPORTED, NO_SPACE, IMAGE_INVALID, RESTARTING: ERROR with
- *   that code
+ *   EXTENSION_UNSUPPORTED, NO_SPACE, IMAGE_INVALID, RESTARTING, NOT_PERMITTED,
+ *   SIGNATURE_INVALID: ERROR with that code
  * - CODE: ERROR with another code
+ * - ACCESS_POINT: the bridge window was opened over the Airfrog Access
+ *   Point, where Airfrog's page doesn't load it. Browser only, with no
+ *   airfrog-client variant
  * - PIN_NAME: a pin's name is longer than 8 bytes. Nothing is sent
  * - TRANSFER_TOO_LARGE: EXT_CMD's data is longer than schema.js's
  *   MAX_TRANSFER_MIN. Nothing is sent
- * - NOT_PERMITTED: in an extension UI, a request the Airfrog UI doesn't
- *   forward. Nothing is sent
+ * - NOT_PERMITTED: also, in an extension UI, a request the Airfrog UI
+ *   doesn't forward. Nothing is sent
  *
  * `detail` is BUSY's extension name (empty when a client holds the claim),
+ * PASSWORD_REQUIRED's Hello, ITERATIONS_TOO_LOW's iterations,
  * LOGIN_BLOCKED's seconds until logins are accepted again, CLOSED's close
  * code, CODE's error code, PIN_NAME's pin, TRANSFER_TOO_LARGE's length,
  * INVALID_MESSAGE's description of the message, CONNECT's and IO's reason,
@@ -142,6 +149,7 @@ const ERROR_CODES = {
     [ERROR_OUT_OF_RANGE]: 'OUT_OF_RANGE', [ERROR_INSTALL_IN_PROGRESS]: 'INSTALL_IN_PROGRESS',
     [ERROR_EXTENSION_INVALID]: 'EXTENSION_INVALID', [ERROR_EXTENSION_UNSUPPORTED]: 'EXTENSION_UNSUPPORTED',
     [ERROR_NO_SPACE]: 'NO_SPACE', [ERROR_IMAGE_INVALID]: 'IMAGE_INVALID', [ERROR_RESTARTING]: 'RESTARTING',
+    [ERROR_NOT_PERMITTED]: 'NOT_PERMITTED', [ERROR_SIGNATURE_INVALID]: 'SIGNATURE_INVALID',
 };
 
 /**
@@ -253,6 +261,11 @@ export class Hello {
     hasPassword() {
         return (this.flags & FLAG_PASSWORD) !== 0;
     }
+
+    /** @returns {Array<Uint8Array>} the firmware's release keys, the release key first */
+    releaseKeys() {
+        return this.keys.map(k => k.key);
+    }
 }
 
 /**
@@ -281,6 +294,24 @@ export function passwordKey(password, salt, iterations) {
     return pbkdf2HmacSha256(ASCII.encode(password), salt, iterations);
 }
 
+/**
+ * The last K computed for login: the password, salt and iterations it is for.
+ * Computing K can take long enough on a phone to pass Airfrog's 5 s limit on a
+ * connection that hasn't logged in, so it is computed without a connection
+ * open and kept for the connections after.
+ */
+let loginKeyCache = null;
+
+function sameBytes(a, b) {
+    return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/** The cached K for password with salt and iterations, or null. */
+function cachedLoginKey(password, salt, iterations) {
+    const c = loginKeyCache;
+    return c && c.password === password && c.iterations === iterations && sameBytes(c.salt, salt) ? c.k : null;
+}
+
 function equal(a, b) {
     let diff = a.length ^ b.length;
     for (let i = 0; i < a.length && i < b.length; i++) {
@@ -299,12 +330,37 @@ function equal(a, b) {
 export class AwpSocket {
     /**
      * Opens the connection, reads HELLO and logs in where Airfrog has a
-     * password.
+     * password. LOGIN follows HELLO at once: without K for HELLO's salt and
+     * iterations, the connection is closed, K is computed and kept, and a new
+     * connection logs in with it.
      * @param {string} host - Airfrog's host, with :port when it isn't 80
      * @param {string|null} password - ignored when Airfrog doesn't have one
+     * @param {object} [options]
+     * @param {function(Hello): AirfrogError|null} [options.checkHello] -
+     *        called with HELLO before logging in. An error it returns closes
+     *        the connection and rejects with it
+     * @param {boolean} [options.login] - false resolves after HELLO without
+     *        logging in
      * @returns {Promise<AwpSocket>}
      */
-    static open(host, password) {
+    static async open(host, password, options = {}) {
+        for (let attempt = 0; ; attempt++) {
+            let needed = null;
+            try {
+                return await AwpSocket.#openOnce(host, password, { ...options,
+                    onKeyNeeded: (salt, iterations) => { needed = { salt, iterations }; } });
+            } catch (e) {
+                // K is computed again when the salt changes between attempts, a few times at most.
+                if (!needed || attempt >= 2) {
+                    throw e;
+                }
+                loginKeyCache = { password, salt: needed.salt.slice(), iterations: needed.iterations,
+                    k: passwordKey(password, needed.salt, needed.iterations) };
+            }
+        }
+    }
+
+    static #openOnce(host, password, { checkHello = null, login = true, onKeyNeeded = null } = {}) {
         return new Promise((resolve, reject) => {
             let ws;
             try {
@@ -313,12 +369,15 @@ export class AwpSocket {
                 reject(new AirfrogError('CONNECT', `invalid host ${host}`, CONNECTION.INVALID_ADDRESS(host)));
                 return;
             }
-            new AwpSocket(ws, password, resolve, reject);
+            new AwpSocket(ws, password, resolve, reject, { checkHello, login, onKeyNeeded });
         });
     }
 
-    constructor(ws, password, resolve, reject) {
+    constructor(ws, password, resolve, reject, { checkHello = null, login = true, onKeyNeeded = null } = {}) {
         this.ws = ws;
+        this.checkHello = checkHello;
+        this.login = login;
+        this.onKeyNeeded = onKeyNeeded;
         this.tx = 0;
         this.rx = 0;
         this.key = null;
@@ -331,7 +390,7 @@ export class AwpSocket {
         this._onmessage = null;
         this.onclose = null;
 
-        // Login
+        // Login. key is S, the connection's key, once logged in
         this.password = password;
         this.opening = { resolve, reject, timer: setTimeout(() => this.fail(new AirfrogError('TIMEOUT')), CONNECT_TIMEOUT_MS) };
         this.nc = null;
@@ -472,7 +531,7 @@ export class AwpSocket {
         this.rx = counter;
 
         if (!this.opened()) {
-            this.login(type, flags, payload);
+            this.loggingIn(type, flags, payload);
         } else if (this._onmessage) {
             this._onmessage(type, flags, payload);
         } else {
@@ -480,7 +539,7 @@ export class AwpSocket {
         }
     }
 
-    login(type, flags, payload) {
+    loggingIn(type, flags, payload) {
         if (!this.hello) {
             if (type !== HELLO) {
                 this.fail(new AirfrogError('INVALID_MESSAGE', `${hex(type)} before HELLO`), CLOSE_PROTOCOL_ERROR);
@@ -497,19 +556,29 @@ export class AwpSocket {
             }
             this.hello = hello;
             this.helloPayload = payload;
-            if (!hello.hasPassword()) {
+            const refused = this.checkHello?.(hello);
+            if (refused) {
+                this.fail(refused);
+                return;
+            }
+            if (!this.login || !hello.hasPassword()) {
                 this.loggedIn();
                 return;
             }
+            if (hello.iterations < MIN_ITERATIONS) {
+                this.fail(new AirfrogError('ITERATIONS_TOO_LOW', hello.iterations));
+                return;
+            }
             if (this.password === null || this.password === undefined) {
-                this.fail(new AirfrogError('PASSWORD_REQUIRED'));
+                this.fail(new AirfrogError('PASSWORD_REQUIRED', hello));
                 return;
             }
-            if (hello.iterations === 0) {
-                this.fail(new AirfrogError('INVALID_MESSAGE', 'HELLO has a password and zero iterations'), CLOSE_PROTOCOL_ERROR);
+            this.k = cachedLoginKey(this.password, hello.salt, hello.iterations);
+            if (!this.k) {
+                this.onKeyNeeded?.(hello.salt, hello.iterations);
+                this.fail(new AirfrogError('CLOSED', null, CONNECTION.CLOSED));
                 return;
             }
-            this.k = passwordKey(this.password, hello.salt, hello.iterations);
             this.nc = crypto.getRandomValues(new Uint8Array(NONCE_LEN));
             const proof = hmacSha256(this.k, ASCII.encode(LOGIN_LABEL), hello.ns, this.nc);
             this.send(LOGIN, encodeLogin({ nc: this.nc, proof }));

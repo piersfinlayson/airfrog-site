@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Cdp } from './harness.mjs';
+import { NETWORK } from '../../../js/messages.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -54,8 +55,8 @@ try {
     const href = await page.eval(`[...document.querySelectorAll('#ap-notice a')].map(a => a.href).join()`);
     check(href === 'http://192.168.1.50/', `displays Airfrog's new address as a link (${href})`);
     const notice = await page.eval(`document.getElementById('ap-notice').firstChild.textContent`);
-    check(notice === "Airfrog joined home. This page uses Airfrog's AP mode, which will be disabled in 2 minutes. "
-        + 'Open http://192.168.1.50/ on home.', `the notice's text (${notice})`);
+    check(notice === NETWORK.AP_JOINED('home', 'http://192.168.1.50/').map(p => p.url ?? p).join(''),
+        `the notice's text (${notice})`);
     check(await page.eval(`document.getElementById('ap-notice').firstChild.getAttribute('role')`) === 'status',
         'the notice is a status line');
     await page.eval(`window.m1Link = document.querySelector('#ap-notice a'); true`);

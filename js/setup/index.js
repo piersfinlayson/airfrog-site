@@ -23,7 +23,7 @@ export * as format from './format.js';
 export * as dom from './dom.js';
 
 /** This module's interface version. A change that callers can't handle raises it. */
-export const API = 2;
+export const API = 3;
 
 /** Adds the setup's stylesheet to the document, once. */
 export function addStyle() {
@@ -35,18 +35,17 @@ export function addStyle() {
 /**
  * Replaces the page with Airfrog's setup and connects.
  * @param {{reason?: string|null, tab?: string|null, firmware?: object|null, firmwareError?: string|null,
- *          loadFirmware?: function(): Promise<object>, model?: {value: number, name: string}|null}} options -
+ *          model?: {value: number, name: string}|null}} options -
  *        why Airfrog's full user interface didn't load, the tab to open, the
- *        verified firmware manifest or why there isn't one, how to load it to
- *        check a chosen firmware file, and the model the firmware was built for
+ *        verified firmware manifest or why there isn't one, and the model the
+ *        firmware was built for
  */
-export function localPage({ reason = null, tab = null, firmware = null, firmwareError = null, loadFirmware = null,
-    model = null } = {}) {
+export function localPage({ reason = null, tab = null, firmware = null, firmwareError = null, model = null } = {}) {
     if (model) {
         nameModel(model.value, model.name);
     }
     addStyle();
-    const page = new Page({ reason, tab, firmware, firmwareError, loadFirmware });
+    const page = new Page({ reason, tab, firmware, firmwareError });
     page.start(document.body);
     return page;
 }

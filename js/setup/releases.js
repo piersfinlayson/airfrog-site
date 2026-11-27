@@ -4,7 +4,6 @@
 
 // The firmware manifest: each released model's Airfrog firmware's releases
 // in version order, highest first, and its latest release.
-// airfrog-v2/docs/ac3-design.md specifies it.
 
 import { UPDATE } from '../messages.js';
 import { MODELS } from '../schema.js';

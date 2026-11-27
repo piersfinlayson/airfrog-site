@@ -20,21 +20,22 @@
 #   airfrog-client exports, layout offsets and AirfrogError's texts
 # - airfrog-v2's ci/awp.py: constants and layout offsets
 # - airfrog-v2's rust/picoboot-airfrog/src/text.rs: its error texts
-# - airfrog-v2's apps/airfrog/schema.cmake: the project name
+# - airfrog-v2's apps/airfrog/schema.cmake: the project name, the frame hosts,
+#   the release keys and the Airfrog manifest's address
 # - airfrog-v2's apps/airfrog/main/page-texts.js: Airfrog's home page's texts
 # - airfrog-v2's components/protocol/airfrog_recovery.h: [recovery_constants]
 # - airfrog-v2's rust/airfrog-cli/src/schema.rs: the firmware image
 #   constants, the released models, the chips, the target firmware names,
-#   the manifest key from commissioning/manifest-key.js, [client_constants],
+#   the release keys from commissioning/release-keys.js, [client_constants],
 #   [recovery_constants] and [cli_output]
 # - airfrog-v2's rust/airfrog-signing-server/src/models.rs:
-#   manifest_version and the firmware manifests' keys
+#   manifest_version, the firmware manifests' keys, the project name, the
+#   model numbers and the extension image header
 #
 # `ci/schema.py check v2` also fails when websocket-protocol.md's message,
 # command, ERROR code, firmware ID, close code, service, operation or layout
 # tables differ from the schema, or when recovery-protocol.md's request header
-# and result tables, or ac5-design.md's One ROM flash and settings block
-# tables, differ from [recovery_constants].
+# and result tables differ from [recovery_constants].
 #
 # After a change here, use `ci/schema.py write site` and
 # `ci/schema.py write v2 ../airfrog-v2`.
@@ -63,7 +64,8 @@
 # ---------------------------------------------------------------------------
 # Values of Airfrog's pages and CLI that aren't AWP's, with [constants]'s
 # value, type and comment. JS's schema.js, Airfrog's home page's texts and
-# airfrog-cli's schema.rs have them.
+# airfrog-cli's schema.rs have them. `client = true` also writes one into
+# airfrog-client's schema.rs.
 #
 # ---------------------------------------------------------------------------
 # [enums.NAME]
@@ -221,7 +223,7 @@
 #                it has one, in place of `text`.
 #   comment    - the comment above it
 # {NAME} in a string is an argument, another message, for example
-# {CLOSED.PASSWORD_CHANGED}, or a constant's value.
+# {CLOSED.PASSWORD_CHANGED}, or the value of a constant or a client constant.
 #
 # `rust = true` on a message also generates its entries in schema.rs's `text`
 # module, a const for a text without arguments, otherwise a function.
@@ -262,6 +264,8 @@ HMAC_LEN = { value = 32, type = "usize", c = false }
 LOGIN_LABEL = { value = "login", type = "str", comment = "The label of the client's proof in LOGIN." }
 PROOF_LABEL = { value = "airfrog", type = "str", comment = "The label of Airfrog's proof in LOGIN's response." }
 SESSION_LABEL = { value = "session", type = "str", comment = "The label of S, the connection's key." }
+PASSWORD_LABEL = { value = "password", type = "str", comment = "The label of the pad that encrypts SET_PASSWORD's key on a logged-in connection." }
+SIGNATURE_LEN = { value = 74, type = "usize", comment = "A signature: Ed, the key ID and the Ed25519 signature." }
 DIRECTION_CLIENT = { value = 0x00, type = "u8", hex = true, rust = "FROM_CLIENT", comment = "The hmac's direction byte on a message from the client." }
 DIRECTION_AIRFROG = { value = 0x01, type = "u8", hex = true, rust = "FROM_AIRFROG", comment = "The hmac's direction byte on a message from Airfrog." }
 PICOBOOT_PACKET_LEN = { value = 32, type = "usize", comment = "A PICOBOOT command packet." }
@@ -293,13 +297,18 @@ SERIAL_LINE_MAX = { value = 8192, type = "usize", comment = "The longest line Ai
 CLAIM_MS = { value = 10000, type = "u32", comment = "The claim ends this long after the response to its holder's last CLAIM, IDENTIFY or TARGET_CMD." }
 MAX_TRANSFER_MIN = { value = 4096, type = "usize", comment = "The smallest HELLO max_transfer, and the most data in EXT_CMD and EXT_NOTIFY." }
 EXT_IMAGE_MAGIC = { value = "AFXI", type = "str", comment = "The start of an extension image." }
+SIGNATURE_MAGIC = { value = "AFSG", type = "str", image = true, comment = "The start of the signature block after a signed file's image." }
 EXTENSIONS_MAX = { value = 16, type = "usize", comment = "Installed extensions." }
 EXT_NAME_MAX = { value = 32, type = "usize", comment = "An extension name." }
 EXT_METADATA_MAX = { value = 2048, type = "usize", comment = "An extension's metadata." }
-EXT_INSTALL_MS = { value = 10000, type = "u32", comment = "An extension install ends this long after its last EXT_BEGIN or EXT_WRITE." }
+INSTALL_MS = { value = 10000, type = "u32", comment = "An extension install, or a firmware update past the button AP's 5 minutes, ends this long after its last BEGIN or WRITE." }
+BUTTON_HOLD_S = { value = 3, type = "u32", comment = "How long the recovery button is held, while Airfrog runs, to start the access point." }
+BUTTON_AP_MIN = { value = 5, type = "u32", comment = "How long the access point started with the recovery button lasts, in minutes." }
 
 [client_constants]
 DOWNLOAD_TIMEOUT_MS = { value = 15000, type = "u64", comment = "A download that receives nothing for this long fails." }
+MIN_ITERATIONS = { value = 100000, type = "u32", client = true, comment = "Clients don't log in when HELLO's iterations is lower." }
+PASSWORD_MIN = { value = 8, type = "usize", comment = "The shortest Airfrog password a client sets." }
 
 [enums.type]
 comment = "Message types."
@@ -357,6 +366,8 @@ IMAGE_INVALID = { value = 16 }
 RESTARTING = { value = 17 }
 EXISTS = { value = 18 }
 NO_ENTRY = { value = 19 }
+NOT_PERMITTED = { value = 20 }
+SIGNATURE_INVALID = { value = 21 }
 
 [enums.close]
 comment = "Close codes."
@@ -421,6 +432,7 @@ ADD_AUTHORISED_WEBSITE = { value = 0x20 }
 REMOVE_AUTHORISED_WEBSITE = { value = 0x21 }
 ADD_HOST_ALIAS = { value = 0x22 }
 REMOVE_HOST_ALIAS = { value = 0x23 }
+SET_WIFI_AP = { value = 0x24 }
 
 [enums.hello_flag]
 comment = "HELLO's flags."
@@ -431,6 +443,21 @@ type = "HelloFlag"
 hex = true
 [enums.hello_flag.values]
 PASSWORD = { bit = 0, rust = "FLAG_PASSWORD", js = "FLAG_PASSWORD", comment = "Airfrog has a password." }
+
+[enums.interface]
+comment = "HELLO's interface: how the client is connected to Airfrog."
+prefix = "INTERFACE_"
+c_prefix = "INTERFACE_"
+c_enum = true
+rust = { type = "u16" }
+type = "Interface"
+js = { object = true }
+[enums.interface.values]
+STATION = { value = 0, comment = "WiFi station, the home network." }
+SERIAL = { value = 1 }
+AP = { value = 2, comment = "Access point." }
+AP_FIRST_SETUP = { value = 3, comment = "Access point, during first setup." }
+AP_BUTTON = { value = 4, comment = "Access point, started with the recovery button." }
 
 [enums.state]
 comment = "TARGET's states."
@@ -676,7 +703,7 @@ hex = true
 NON_SECURE = { bit = 0, comment = "Make Non-secure accesses." }
 
 [enums.ext_flag]
-comment = "GET_EXTENSIONS's and EXT_BEGIN's flags."
+comment = "GET_EXTENSIONS's flags."
 prefix = "EXT_"
 c_prefix = "EXT_FLAG_"
 rust = { type = "u16" }
@@ -685,10 +712,10 @@ js = { object = true }
 hex = true
 [enums.ext_flag.values]
 TAB = { bit = 0, comment = "The extension's Tab checkbox is ticked." }
-SIDE_LOADED = { bit = 1, comment = "Installed from a file, not the repository." }
+UNSIGNED = { bit = 1, comment = "Installed without a signature." }
 
 [enums.set_ext_flag]
-comment = "SET_EXTENSIONS's flags. Other bits fail with OUT_OF_RANGE."
+comment = "SET_EXTENSIONS's and EXT_BEGIN's flags. Other bits fail with OUT_OF_RANGE."
 prefix = "SET_EXT_"
 c_prefix = "SET_EXT_FLAG_"
 rust = { type = "u16" }
@@ -798,6 +825,17 @@ fields = [
     { name = "ns", type = "bytes", size = "NONCE_LEN" },
     { name = "salt", type = "bytes", size = "SALT_LEN" },
     { name = "iterations", type = "u32" },
+    { name = "interface", type = "u16" },
+    { name = "key_count", type = "u16" },
+    { name = "keys", type = "list", count = "key_count", entry = "RELEASE_KEY" },
+    { name = "manifest_url", type = "text" },
+]
+
+[layouts.RELEASE_KEY]
+doc = false
+comment = "A release key in HELLO, an Ed25519 public key."
+fields = [
+    { name = "key", type = "bytes", size = 32 },
 ]
 
 [layouts.LOGIN]
@@ -895,6 +933,7 @@ fields = [
     { type = "reserved", size = 2 },
     { name = "wamr", type = "bytes", size = 3 },
     { type = "reserved", size = 1 },
+    { name = "sha256", type = "bytes", size = 32 },
     { name = "commit", type = "text", optional = true },
 ]
 
@@ -925,6 +964,13 @@ fields = [
     { name = "ipv4", type = "bytes", size = 4 },
     { name = "ipv6", type = "bytes", size = 16 },
     { name = "ssid", type = "text" },
+]
+
+[layouts.SET_WIFI_AP]
+doc = "#### SET_WIFI_AP"
+fields = [
+    { name = "ssid", type = "text" },
+    { name = "password", type = "text" },
 ]
 
 [layouts.SET_WIFI_STA]
@@ -1045,6 +1091,7 @@ doc = "#### Firmware update"
 fields = [
     { name = "size", type = "u32" },
     { name = "sha256", type = "bytes", size = 32 },
+    { name = "signature", type = "bytes", size = "SIGNATURE_LEN" },
 ]
 
 [layouts.OTA_WRITE]
@@ -1133,6 +1180,7 @@ fields = [
     { name = "sha256", type = "bytes", size = 32 },
     { name = "flags", type = "u16" },
     { type = "reserved", size = 2 },
+    { name = "signature", type = "bytes", size = "SIGNATURE_LEN" },
 ]
 
 [layouts.EXTENSION_NAME]
@@ -1430,6 +1478,10 @@ comment = "ERROR OUT_OF_RANGE's text, everywhere."
 export = false
 text = "Invalid value."
 
+[messages.UNSUPPORTED_FIRMWARE]
+comment = "An Airfrog whose firmware this client doesn't support: another Airfrog manifest address, no release key in common, or fewer than MIN_ITERATIONS password iterations."
+text = "Unsupported Airfrog firmware."
+
 [messages.ERRORS]
 comment = "For each AirfrogError code: the text, from its detail."
 functions = true
@@ -1438,6 +1490,7 @@ rust = true
 TIMEOUT = "No response from Airfrog."
 PASSWORD_REQUIRED = "Password required."
 LOGIN_FAILED = "Incorrect password."
+ITERATIONS_TOO_LOW = { comment = "HELLO's iterations is below MIN_ITERATIONS, so the client doesn't log in.", text = "{UNSUPPORTED_FIRMWARE}" }
 LOGIN_BLOCKED = { args = ["s"], rust_args = ["Option<u32>"], cases = [
     { is = 1, text = "Too many failed login attempts. Retry in 1 second." },
     { absent = true, text = "Too many failed login attempts. Retry later." },
@@ -1476,6 +1529,8 @@ EXTENSION_INVALID = "Invalid extension."
 EXTENSION_UNSUPPORTED = "Extension not supported by this Airfrog."
 NO_SPACE = "No room for the extension. Remove an extension, then try again."
 IMAGE_INVALID = "{INVALID_FIRMWARE_FILE}"
+NOT_PERMITTED = "Not permitted over this connection."
+SIGNATURE_INVALID = "Invalid signature."
 RESTARTING = "{RESTARTING}"
 CODE = { args = ["code"], rust_args = ["u16"], lookup = "ERROR_CODES", text = "Airfrog error {code}." }
 TRANSFER_TOO_LARGE = { args = ["len", "max"], rust_args = ["usize", "u32"], text = "Transfer of {len} bytes is larger than Airfrog's limit of {max}" }
@@ -1498,11 +1553,15 @@ comment = "Connecting and logging in."
 CONNECTING = "Connecting to Airfrog…"
 LOGGING_IN = "Logging in…"
 LOG_IN_AGAIN = "{CLOSED.PASSWORD_CHANGED} Log in again."
+PASSWORD_SAVED = { comment = "The login card after the first setup password or a reset over the recovery button AP.", text = "Password saved. Log in with the new password." }
 FORGOTTEN = { comment = "Followed by a link to the recovery page.", text = "Forgotten password: See " }
+FORGOTTEN_AP = { comment = "In place of FORGOTTEN over the access point, other than the one started with the recovery button.", text = "Forgotten password: Hold the recovery button for {BUTTON_HOLD_S} seconds then reload this page." }
 LOG_IN = { comment = "The login card's title and button.", text = "Log in" }
 PASSWORD = "Password"
 INVALID_ADDRESS = { args = ["host"], text = "Invalid address {host}." }
 NOT_AIRFROG = "Not an Airfrog at this address. Check the address."
+OTHER_FIRMWARE = { comment = "Firmware with another manifest address or other release keys, in the airfrog.org UI and its bridge window.", text = "{UNSUPPORTED_FIRMWARE}" }
+RESET_PASSWORD = { comment = "The heading of the login card's reset fields over the access point started with the recovery button.", text = "Reset password" }
 CLOSED = { comment = "A connection closed by this page, or closed before a command.", text = "Connection to Airfrog closed." }
 
 [messages.RESTART]
@@ -1536,7 +1595,7 @@ NO_NETWORKS = "No networks found."
 JOINING = { args = ["ssid"], text = "Airfrog joining {ssid}." }
 JOINING_RECONNECT = { args = ["ssid", "url"], linked = true, text = "Airfrog joining {ssid}. Open {url} on that network if this page doesn't reconnect." }
 NOT_JOINED = { args = ["ssid"], text = "Airfrog failed to connect to {ssid}. Check the network name and password, then select Save and connect." }
-AP_JOINED = { args = ["ssid", "url"], linked = true, comment = "The warning card while this page uses AP mode after Airfrog joined ssid.", text = "Airfrog joined {ssid}. This page uses Airfrog's AP mode, which will be disabled in 2 minutes. Open {url} on {ssid}." }
+AP_JOINED = { args = ["ssid", "url"], linked = true, comment = "The warning card while this page uses AP mode after Airfrog joined ssid.", text = "Airfrog joined {ssid}. The Airfrog Access Point will be disabled in 2 minutes. Open {url} on {ssid}." }
 JOINED = { args = ["ssid", "url"], linked = true, comment = "The status once the connection through AP mode closes.", text = "Airfrog joined {ssid}. Open {url} on that network." }
 AP_STOPPED = { args = ["ssid", "url"], linked = true, text = "AP mode stopped. Open {url} on {ssid}." }
 HOSTNAME_CHANGED = { args = ["name"], text = "Hostname changed to {name}." }
@@ -1561,7 +1620,7 @@ AUTOMATIC_DHCP = "Automatic (DHCP)"
 IPV6_ADDRESS = "IPv6 address"
 MAC_ADDRESS = "MAC address"
 AP_MODE = "AP mode"
-AP_MODE_TIP = "The Airfrog access point. Password airfrogx. It stops when Airfrog joins a network, or 2 minutes later when a device is connected to it."
+AP_MODE_TIP = "Airfrog Access Point used for setup and recovery."
 STOP_AP_MODE = "Stop AP mode"
 POWER_SAVE = "WiFi power save"
 POWER_SAVE_TIP = "Uses less power. Airfrog responds more slowly."
@@ -1600,6 +1659,16 @@ HOST_ALIASES_TIP = "Other names for Airfrog, for example from your router's DNS.
 TOO_MANY_ALIASES = "Too many host aliases. Maximum {HOST_ALIASES_MAX}."
 INVALID_ALIAS = { args = ["alias"], text = "Invalid host alias {alias}. Use up to {HOST_ALIAS_MAX} characters: labels of 1 to {LABEL_MAX} letters, digits and hyphens, separated by dots." }
 
+[messages.WIFI_AP]
+comment = "The Access point card, displayed only over the access point."
+[messages.WIFI_AP.entries]
+TITLE = "Airfrog Access Point"
+TIP = "{NETWORK.AP_MODE_TIP}"
+NAME = "Network name"
+PASSWORD = "Password"
+SAVED = { comment = "Airfrog then restarts the access point, which closes this connection.", text = "Airfrog Access Point settings saved. Reconnect with the new password." }
+INVALID_PASSWORD = "Password must be {WIFI_PASSWORD_MIN} to {WIFI_PASSWORD_MAX} characters."
+
 [messages.PASSWORD]
 comment = "The Password card."
 [messages.PASSWORD.entries]
@@ -1612,10 +1681,20 @@ NEW_PASSWORD = "New password"
 CONFIRM_PASSWORD = "Confirm password"
 ENTER_NEW = "Enter the new password."
 NOT_MATCHING = "Passwords don't match."
+FIRST_SETUP = { comment = "The first setup screen over the access point, above the password fields, and the Join a network card over the access point without an Airfrog password.", text = "Set an Airfrog password." }
 SET_PASSWORD = { comment = "The card's button and the link in the warning card without a password.", text = "Set password" }
-CHANGE_PASSWORD = "Change password"
 REMOVE_PASSWORD = "Remove password"
 REMOVE = { comment = "CONFIRM_REMOVE's button.", text = "Remove" }
+
+[messages.PASSWORD_RULE]
+comment = "The password rule: INTRO, then each requirement as a bullet. NOT_MET in place of INTRO when a password breaks it."
+[messages.PASSWORD_RULE.entries]
+INTRO = "The password must have:"
+LENGTH = "At least {PASSWORD_MIN} characters"
+UPPER = "An upper case letter"
+LOWER = "A lower case letter"
+NUMBER = "A number"
+NOT_MET = "Password doesn't meet these requirements:"
 
 [messages.AUTHORISED_WEBSITES]
 comment = "The Authorised websites card in the System tab. {site} is a website as siteName() in awp.js displays it."
@@ -1642,6 +1721,8 @@ FILE_HELP = { args = ["file"], comment = "The New firmware file tooltip, with th
 INVALID_FILE = "{INVALID_FIRMWARE_FILE}"
 WRONG_MODEL = { comment = "Airfrog firmware for another model.", text = "Invalid firmware file (incorrect Airfrog model)." }
 UNSIGNED = "Unsigned firmware."
+UNSIGNED_NOT_HERE = "Unsigned firmware can only be installed over the Airfrog Access Point started with the recovery button."
+OLDER_NOT_HERE = { args = ["version"], comment = "With the running firmware's version as VALUES.VERSION writes it.", text = "Firmware older than {version} can only be installed over the Airfrog Access Point started with the recovery button." }
 LATEST = { comment = "The Version row's note.", text = "Latest release." }
 LATEST_UNKNOWN = { comment = "Followed by why the firmware manifest isn't available.", text = "Latest release unknown." }
 DOWNLOADING = { args = ["version"], text = "Downloading firmware {version}…" }
@@ -1731,6 +1812,7 @@ SERVICE = { args = ["service"], comment = "A service not in SERVICES, by its num
 OPERATION = { args = ["operation"], comment = "An operation not in SERVICES, by its number.", text = "operation {operation}" }
 VERSION = { args = ["version"], text = "v{version}" }
 WITH_COMMIT = { args = ["version", "commit"], text = "{version} ({commit})" }
+WITH_NOTE = { args = ["version", "note"], comment = "An installed extension's version with its note: unsigned, latest or depublished.", text = "{version} ({note})" }
 MB = { args = ["size"], text = "{size} MB" }
 KB = { args = ["size"], text = "{size} KB" }
 DBM = { args = ["rssi"], text = "{rssi} dBm" }
@@ -1772,6 +1854,7 @@ CHANGE_CHECK_TIP = "How often Airfrog checks for a target reset or a new target.
 INVALID_CHANGE_CHECK = "Invalid target check interval. Use 0 to 65535 ms."
 RECOVERY = "Airfrog recovery"
 RECOVERY_TIP = "Whether the target can reinstall Airfrog firmware and erase Airfrog settings when Airfrog boots."
+RECOVERY_NOT_HERE = { comment = "Below the recovery checkbox, which can't be ticked while recovery can't be enabled.", text = "Airfrog recovery can only be enabled over serial or the Airfrog Access Point started with the recovery button." }
 
 [messages.SERIAL_ACTIONS]
 comment = "Each command's action in SERIAL_SETUP.NO_RESPONSE, by the command's name."
@@ -1817,8 +1900,9 @@ STATE = "State"
 TAB_COLUMN = "Tab"
 TAB_CHECKBOX = { args = ["name"], comment = "The Tab checkbox's label for screen readers.", text = "{name} tab" }
 LATEST = { args = ["version"], comment = "After the installed version.", text = "latest {version}" }
-SIDE_LOADED = "from file"
-DEPUBLISHED = "Depublished"
+UNSIGNED = "unsigned"
+UNSIGNED_NOT_HERE = "Unsigned extensions can only be installed with the Airfrog CLI."
+DEPUBLISHED = "depublished"
 RUNNING = "{RUNNING}"
 STOPPED = "{STOPPED}"
 UI_ONLY = "UI only"
@@ -1836,7 +1920,7 @@ FOR = "For:"
 ANY_TARGET = "Any target"
 OTHER_TARGETS = "Other targets"
 COUNT = { args = ["shown", "total"], text = "{shown} of {total} available extensions" }
-SIDE_LOAD_CONFIRM = "Extensions added from a file have full access to Airfrog."
+UNSIGNED_CONFIRM = "Unsigned extensions have full access to Airfrog."
 REMOVE_CONFIRM = { args = ["name"], text = "Are you sure you want to remove {name}?" }
 INSTALLING = { args = ["name", "version"], text = "Installing {name} {version}…" }
 INSTALLED = { args = ["name", "version"], text = "Installed {name} {version}." }
@@ -1869,20 +1953,21 @@ page = true
 [messages.HOME_PAGE.entries]
 TITLE = "{AIRFROG}"
 LOADING = "Loading…"
-DOWNLOAD_FAILED = "Download failed. Check internet access."
+DOWNLOAD_FAILED = "Check this browser's internet access."
 DOWNLOAD_HTTP = { args = ["status"], text = "Download failed (HTTP {status})." }
 DOWNLOAD_TIMED_OUT = "Download failed (timed out)."
 RELEASE_LIST_SIGNATURE = "{RELEASE_LIST.SIGNATURE}"
 RELEASE_LIST_INVALID = "{RELEASE_LIST.INVALID}"
 MANIFEST_SIGNATURE = "Invalid signature."
 MANIFEST_INVALID = "Invalid manifest."
-NO_MANIFEST_KEY = "Rebuild firmware with CONFIG_AIRFROG_MANIFEST_KEY."
 NEWER_FIRMWARE = "Newer firmware required. Update firmware."
 DOWNLOAD_CORRUPT = "Download corrupt. Reload the page."
 INCOMPLETE = "Incomplete release."
 START_FAILED = "Start failed. Reload the page."
 BRIDGE_NOT_LOADED = { args = ["reason"], text = "Bridge window not loaded. {reason}" }
 UI_FAILED = "Airfrog UI failed to load. Reload the page."
+ACCESS_POINT = { comment = "Over the access point, in place of the full user interface.", text = "Airfrog Access Point. Full Airfrog UI not available." }
+ACCESS_POINT_BUTTON = { comment = "After ACCESS_POINT over the access point started with the recovery button.", text = "The Airfrog Access Point will be disabled {BUTTON_AP_MIN} minutes after the recovery button was pressed." }
 
 [messages.BRIDGE]
 comment = """
@@ -1902,6 +1987,7 @@ CLOSING_DISCONNECTS = { args = ["site", "host"], text = "Closing this window dis
 DISCONNECT = "Disconnect"
 DISCONNECTED = { args = ["site", "host"], text = "{site} was disconnected from {host}." }
 NOT_CONNECTED = { args = ["site", "host"], text = "{site} couldn't connect to {host}." }
+ON_AP = { args = ["site", "host"], comment = "The bridge window opened over the access point.", text = "{site} can't connect to {host} over the Airfrog Access Point." }
 RECONNECT_FROM = { args = ["site"], text = "Reconnect from {site}." }
 CLOSE = "Close"
 PASSWORD_CHANGED = { args = ["host"], text = "{host}'s password was changed." }
@@ -1958,7 +2044,7 @@ HOLD_BOOT = "Hold BOOT low while pulling EN low and releasing it, then select Co
 NO_PSRAM = { comment = "The PSRAM row of an ESP32-S3 without PSRAM.", text = "None" }
 
 [messages.COMMISSIONING_FIRMWARE]
-comment = "airfrog.org/commissioning's Firmware card. The full user interface also displays MANIFEST_KEY_NOT_SET."
+comment = "airfrog.org/commissioning's Firmware card. The full user interface also displays RELEASE_KEYS_NOT_SET."
 [messages.COMMISSIONING_FIRMWARE.entries]
 RELEASE = "Release"
 INSTALL_FIRMWARE = "Install firmware"
@@ -1967,7 +2053,7 @@ KEEP = "Keep current firmware"
 KEEP_TIP = "Starts the current Airfrog firmware and keeps the settings."
 CONFIRM_INSTALL = { args = ["version"], text = "Install firmware {version}? The Airfrog settings are erased." }
 INSTALL = { comment = "CONFIRM_INSTALL's button.", text = "Install" }
-MANIFEST_KEY_NOT_SET = "Manifest key not set."
+RELEASE_KEYS_NOT_SET = "Release keys not set."
 RELEASE_LIST = { comment = "A download's name.", text = "Release list" }
 FIRMWARE = { comment = "A download's name.", text = "Firmware" }
 RELEASE_VERSION = { args = ["version"], comment = "A download's name.", text = "Release v{version}" }
@@ -2024,7 +2110,7 @@ HTTP_STATUS = { args = ["status"], rust_args = ["u16"], text = "Airfrog returned
 DISCOVER = { args = ["reason"], rust_args = ["&str"], text = "Couldn't search the network for Airfrogs: {reason}" }
 
 [recovery_constants]
-comment = "The recovery protocol's request header (airfrog-v2/docs/recovery-protocol.md), One ROM's flash during a recovery and the settings block of One ROM's recovery and serial firmware (airfrog-v2/docs/ac5-design.md sections 4 and 5), and the support firmware manifest's keys. In airfrog-cli's schema.rs and airfrog-v2's components/protocol/airfrog_recovery.h."
+comment = "The recovery protocol's request header (airfrog-v2/docs/recovery-protocol.md), One ROM's flash during a recovery and the settings block of One ROM's recovery and serial firmware, and the support firmware manifest's keys. In airfrog-cli's schema.rs and airfrog-v2's components/protocol/airfrog_recovery.h."
 FIRMWARE_ADDR = { value = 0x10000000, type = "u32", hex = true, comment = "The recovery firmware in One ROM's flash." }
 FIRMWARE_MAX = { value = 0x10000, type = "usize", hex = true }
 REQUEST_ADDR = { value = 0x10010000, type = "u32", hex = true, comment = "The request header, in its own 4 KB sector." }
@@ -2092,6 +2178,7 @@ PASSWORD_NOT_ENTERED = "No password provided."
 FAILED = { args = ["host", "reason"], rust_args = ["&str", "&str"], text = "Hit an error accessing Airfrog {host}:\n  {reason}" }
 OVER_USB = "The selected operation must be performed over USB.\n  Do not specify --airfrog."
 OVER_SERIAL = "The selected operation must be performed over serial.\n  Do not specify --airfrog."
+UNSUPPORTED_FIRMWARE = { args = ["host"], rust_args = ["&str"], comment = "Firmware with another manifest address or other release keys, or HELLO's iterations below MIN_ITERATIONS.", text = "Unsupported Airfrog firmware: {host}" }
 
 [cli_output.PROMPT]
 comment = "A prompt for confirmation, as onerom's."
@@ -2143,6 +2230,8 @@ VERIFYING = "Verifying the firmware..."
 RESTARTING = { args = ["version"], rust_args = ["&str"], text = "Restarting into firmware v{version}..." }
 UPDATED = { args = ["version"], rust_args = ["&str"], text = "Updated to firmware v{version}." }
 UNSIGNED = "{UPDATE.UNSIGNED}"
+UNSIGNED_NOT_PERMITTED = "{UPDATE.UNSIGNED_NOT_HERE}"
+OLDER_NOT_PERMITTED = { args = ["version"], rust_args = ["&str"], comment = "With the running firmware's version, for example v0.2.0.", text = "{UPDATE.OLDER_NOT_HERE}" }
 REVERTED = { args = ["running"], rust_args = ["&str"], text = "Update failed: Airfrog reverted to firmware v{running}" }
 NO_RESPONSE = { args = ["previous"], rust_args = ["&str"], text = "Update failed: no response from Airfrog after restart\n  Airfrog reverts to firmware v{previous} within 2 minutes." }
 NOT_RELEASED = { args = ["version"], rust_args = ["&str"], text = "Firmware release not found: v{version}" }
@@ -2158,7 +2247,6 @@ SHA256_MISMATCH = { args = ["file", "expected", "got"], rust_args = ["&str", "&s
 SIZE_MISMATCH = { args = ["file", "expected", "got"], rust_args = ["&str", "usize", "usize"], text = "Size mismatch for downloaded file '{file}':\n  expected {expected}\n  got      {got}" }
 FILE = { args = ["file", "reason"], rust_args = ["&str", "&str"], text = "File not readable: {file}\n  {reason}" }
 NOT_WRITTEN = { args = ["file", "reason"], rust_args = ["&str", "&str"], text = "File not written: {file}\n  {reason}" }
-MANIFEST_KEY_NOT_SET = "{COMMISSIONING_FIRMWARE.MANIFEST_KEY_NOT_SET}"
 MANIFEST_SIGNATURE = { args = ["url"], rust_args = ["&str"], text = "Invalid manifest signature: {url}" }
 MANIFEST_INVALID = { args = ["url"], rust_args = ["&str"], text = "Invalid manifest: {url}" }
 
@@ -2210,12 +2298,19 @@ JOINING = { args = ["ssid"], rust_args = ["&str"], text = "Airfrog joining netwo
 PASSWORD_PROMPT = { args = ["ssid"], rust_args = ["&str"], text = "WiFi password for {ssid}: " }
 PASSWORD_REQUIRED = "WiFi password required."
 INVALID_PASSWORD = { args = ["reason"], rust_args = ["&str"], text = "Invalid WiFi password: {reason}" }
+AIRFROG_PASSWORD_FIRST = { args = ["cli"], rust_args = ["&str"], comment = "SET_WIFI_STA over the access point without an Airfrog password.", text = "{PASSWORD.FIRST_SETUP}\n  Use '{cli} password set' to set a password." }
 
 [cli_output.AP_MODE]
 STATE = { args = ["state"], rust_args = ["&str"], text = "{NETWORK.AP_MODE}: {state}" }
 CONNECTED_DEVICES = "Connected devices"
 STOPPED = "AP mode stopped."
 NOT_JOINED = "AP mode remains active until Airfrog joins a network."
+PASSWORD_PROMPT = "Airfrog Access Point password: "
+CONFIRM_PROMPT = "Confirm Airfrog Access Point password: "
+PASSWORD_REQUIRED = "Airfrog Access Point password required.\n  Use --password to provide the password."
+INVALID_PASSWORD = "Airfrog Access Point password must be {WIFI_PASSWORD_MIN} to {WIFI_PASSWORD_MAX} characters."
+SAVED = "{WIFI_AP.SAVED}"
+NOT_PERMITTED = "Airfrog Access Point settings can only be changed over the Airfrog Access Point."
 
 [cli_output.HOSTNAME]
 CHANGED = { args = ["name"], rust_args = ["&str"], text = "{NETWORK.HOSTNAME_CHANGED}\n  Use --airfrog {name}.local to select it." }
@@ -2224,6 +2319,9 @@ CHANGED = { args = ["name"], rust_args = ["&str"], text = "{NETWORK.HOSTNAME_CHA
 NEW_PROMPT = "{PASSWORD.NEW_PASSWORD}: "
 CONFIRM_PROMPT = "{PASSWORD.CONFIRM_PASSWORD}: "
 NOT_MATCHING = "Passwords do not match."
+RULE = "{PASSWORD_RULE.INTRO}\n  - {PASSWORD_RULE.LENGTH}\n  - {PASSWORD_RULE.UPPER}\n  - {PASSWORD_RULE.LOWER}\n  - {PASSWORD_RULE.NUMBER}"
+WEAK = "{PASSWORD_RULE.NOT_MET}\n  - {PASSWORD_RULE.LENGTH}\n  - {PASSWORD_RULE.UPPER}\n  - {PASSWORD_RULE.LOWER}\n  - {PASSWORD_RULE.NUMBER}"
+RESET_NOT_PERMITTED = "The password can only be reset over the Airfrog Access Point started with the recovery button."
 REQUIRED = "New password required.\n  Use --new-password to provide the password."
 ALREADY_SET = { args = ["cli"], rust_args = ["&str"], text = "Airfrog password already set.\n  Use '{cli} password update' to change the password." }
 NOT_SET = { args = ["cli"], rust_args = ["&str"], text = "{PASSWORD.NOT_SET}\n  Use '{cli} password set' to set a password." }
@@ -2249,7 +2347,8 @@ INVALID = { args = ["website"], rust_args = ["&str"], text = "{AUTHORISED_WEBSIT
 [cli_output.EXTENSION]
 LINE = { args = ["name", "version", "note", "state"], rust_args = ["&str", "&str", "&str", "&str"], text = "{name} {version}{note} - {state}" }
 LATEST = { args = ["version"], rust_args = ["&str"], text = " (latest {version})" }
-SIDE_LOADED = " (side-loaded)"
+UNSIGNED = " (unsigned)"
+UNSIGNED_NOT_PERMITTED = "Unsigned extensions and extension packages can only be installed over serial or the Airfrog Access Point started with the recovery button."
 DEPUBLISHED = " ({EXTENSIONS.DEPUBLISHED})"
 RUNNING = "{RUNNING}"
 STOPPED = "{STOPPED}"
@@ -2264,7 +2363,7 @@ REMOVED = { args = ["name"], rust_args = ["&str"], text = "Removed extension: {n
 ALREADY_INSTALLED = { args = ["name"], rust_args = ["&str"], text = "Extension already installed: {name}" }
 NOT_FOUND = { args = ["name"], rust_args = ["&str"], text = "Extension not found: {name}" }
 UP_TO_DATE = { args = ["name"], rust_args = ["&str"], text = "Extension is up to date: {name}." }
-IS_SIDE_LOADED = { args = ["name"], rust_args = ["&str"], text = "Extension side-loaded: {name}" }
+IS_UNSIGNED = { args = ["name"], rust_args = ["&str"], text = "Unsigned extension not updated: {name}" }
 IS_DEPUBLISHED = { args = ["name"], rust_args = ["&str"], text = "Extension depublished: {name}" }
 NOT_INSTALLED = { args = ["name"], rust_args = ["&str"], text = "Extension not installed: {name}" }
 UNSUPPORTED = { args = ["name"], rust_args = ["&str"], text = "Extension not supported: {name}" }
@@ -2326,6 +2425,7 @@ UNKNOWN_BOARD = { args = ["id"], rust_args = ["&str"], comment = "With the ID in
 BOARD_NOT_FOUND = { args = ["cli", "board"], rust_args = ["&str", "&str"], text = "Board type not found: {board}\n  Use '{cli} target-board list' to list board types." }
 AMBIGUOUS_BOARD = { args = ["board", "found"], rust_args = ["&str", "&str"], text = "Multiple board types match: {board}\n  Found: {found}" }
 SAVED = "Target settings saved."
+RECOVERY_NOT_PERMITTED = "{TARGET_SETTINGS.RECOVERY_NOT_HERE}"
 
 [cli_output.COMMISSION]
 PROGRAMMING = { comment = "Also pico program.", text = "Programming device - DO NOT DISCONNECT" }

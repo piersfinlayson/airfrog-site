@@ -12,15 +12,15 @@ export const AIRFROG_EXTENSIONS = 'https://extensions.airfrog.org/';
 export const AIRFROG_RELEASES = 'https://github.com/piersfinlayson/airfrog-v2/releases/download/';
 /** The recovery page */
 export const RECOVERY = 'https://airfrog.org/recovery';
-/** airfrog-site's copy of the manifest key's public half, which verifies the manifests */
-export const MANIFEST_KEY_JS = 'https://airfrog.org/commissioning/manifest-key.js';
+/** The release keys and the Airfrog manifest's address */
+export const RELEASE_KEYS_JS = 'https://airfrog.org/commissioning/release-keys.js';
 /** The firmware manifest */
 export const FIRMWARE_MANIFEST = 'https://images.airfrog.org/firmware/manifest.json';
 /** A release of a model's firmware */
 export const FIRMWARE_RELEASE = 'https://images.airfrog.org/firmware/airfrog-{model}/v{release}/';
-/** The firmware alone, installed over WiFi */
+/** Firmware image, for updating an Airfrog */
 export const FIRMWARE_UPDATE_IMAGE = 'https://images.airfrog.org/firmware/airfrog-{model}/v{release}/airfrog-{model}.bin';
-/** The whole flash of a blank Airfrog in one file, for esptool and browser flashers */
+/** Full flash image, for commissioning a new Airfrog */
 export const FIRMWARE_FACTORY_IMAGE = 'https://images.airfrog.org/firmware/airfrog-{model}/v{release}/airfrog-{model}.factory.bin';
 /** The factory image as separate files with commission.json, for airfrog.org/commissioning and airfrog commission */
 export const FIRMWARE_FACTORY_FILES = 'https://images.airfrog.org/firmware/airfrog-{model}/v{release}/airfrog-{model}.factory/';

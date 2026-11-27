@@ -5,7 +5,7 @@
 // Fills airfrog.org/cli's Downloads table from the CLI manifest, with a row for
 // each architecture that has a latest release, in CLI_TARGETS' order.
 
-import { AIRFROG_MANIFEST, MANIFEST_KEY } from '../commissioning/manifest-key.js';
+import { AIRFROG_MANIFEST, RELEASE_KEYS } from '../commissioning/release-keys.js';
 import { sentence } from '../commissioning/explain.js';
 import { COMMISSIONING_FIRMWARE } from '../js/messages.js';
 import { CLI_TARGETS } from '../js/schema.js';
@@ -28,11 +28,12 @@ function show(target, { version, url, file }) {
 }
 
 try {
-  const downloads = await latestDownloads(AIRFROG_MANIFEST, MANIFEST_KEY);
+  const downloads = await latestDownloads(AIRFROG_MANIFEST, RELEASE_KEYS);
   const order = Object.keys(CLI_TARGETS);
   const place = (target) => (order.includes(target) ? order.indexOf(target) : order.length);
   [...downloads].sort(([a], [b]) => place(a) - place(b)).forEach(([target, download]) => show(target, download));
 } catch (err) {
-  message.textContent = [sentence(err), MANIFEST_KEY ? COMMISSIONING_FIRMWARE.RELOAD : ''].filter((t) => t).join(' ');
+  message.textContent = [sentence(err), RELEASE_KEYS.length ? COMMISSIONING_FIRMWARE.RELOAD : ''].filter((t) => t)
+    .join(' ');
   message.hidden = false;
 }

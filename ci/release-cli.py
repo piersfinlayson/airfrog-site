@@ -19,8 +19,9 @@ Usage: python3 ci/release-cli.py --images DIR --signer URL --version VERSION --f
   --version  the release, for example 0.2.1
   --files    the directory of built files
 
-The signing key must be the one in commissioning/manifest-key.js. The PIN is
-read from the terminal. Use the Python ci/install-python.sh installs.
+The signing server's key must be one of commissioning/release-keys.js's
+release keys. The PIN is read from the terminal. Use the Python
+ci/install-python.sh installs.
 """
 import argparse
 import os

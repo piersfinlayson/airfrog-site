@@ -9,13 +9,13 @@ import {
     button, card, changed, check, editable, field, h, input, linked, message, rows, setPill, showErrors, showRow,
     signal,
 } from './dom.js';
-import { NETWORK, SETTINGS, VALUES } from '../messages.js';
+import { NETWORK, PASSWORD, SETTINGS, VALUES, WIFI_AP } from '../messages.js';
 import { ipv4, ipv6, isZero, macText, signalBars } from './format.js';
 import {
-    BOOT_WINDOW_AUTO, Command, Ipv4Mode, ScanState, ScanSecurity, StaReason, StaState, encodeWifiScan, errorText,
-    parseWifiScan,
+    BOOT_WINDOW_AUTO, Command, Interface, Ipv4Mode, ScanState, ScanSecurity, StaReason, StaState, encodeWifiScan, errorText,
+    overAp, parseWifiScan,
 } from './protocol.js';
-import { checkAliases, checkHostname, checkSettings, checkWifi } from './validate.js';
+import { checkAliases, checkHostname, checkSettings, checkWifi, checkWifiAp } from './validate.js';
 import { HOSTNAME_MAX, SSID_MAX, WIFI_PASSWORD_MAX } from '../schema.js';
 
 /** The password field's value while a saved password is kept. */
@@ -91,9 +91,12 @@ export class WifiView extends View {
      * Whether this page reaches Airfrog through AP mode while it stays on
      * after Airfrog joined its network. On AP mode every name resolves to
      * Airfrog, so only the network's own address is known not to be AP mode.
+     * Not the recovery button's access point, which Airfrog starts while it
+     * stays on its network.
      */
     onAp({ sta, ap }) {
-        return Boolean(this.setup.closes && ap?.on && sta?.state === StaState.CONNECTED
+        return Boolean(this.setup.closes && this.setup.state.interface !== Interface.AP_BUTTON
+            && ap?.on && sta?.state === StaState.CONNECTED
             && location.hostname !== ipv4(sta.ipv4));
     }
 
@@ -162,7 +165,8 @@ export class WifiView extends View {
         v.assignment.textContent = sta.ipv4Mode === Ipv4Mode.STATIC ? NETWORK.MANUAL : NETWORK.AUTOMATIC_DHCP;
         v.ipv6.textContent = isZero(sta.ipv6) ? VALUES.NONE : ipv6(sta.ipv6);
         v.mac.textContent = hw ? macText(hw.mac) : VALUES.NONE;
-        v.ap.textContent = ap?.on ? `${ap.ssid}, ${ipv4(ap.ipv4)}` : VALUES.NONE;
+        v.ap.textContent = !ap?.on ? VALUES.NONE
+            : overAp(this.setup.state.interface) ? `${ap.ssid}, ${ipv4(ap.ipv4)}` : ipv4(ap.ipv4);
         for (const key of ['signal', 'ip', 'netmask', 'gateway', 'dns', 'ipv6']) {
             showRow(this.rows, key, connected);
         }
@@ -187,6 +191,56 @@ export class WifiView extends View {
         if (await this.setup.save(this.powerMsg, Command.SET_SETTINGS, fields, SETTINGS.SAVED)) {
             this.power.dirty = false;
             await this.setup.reload('settings');
+        }
+    }
+}
+
+/**
+ * The access point's name and password, displayed and changed only over the
+ * access point. GET_WIFI_AP doesn't return the password, so it is always
+ * entered.
+ */
+export class WifiApView extends View {
+    constructor(setup) {
+        super(setup);
+        this.msg = message();
+        this.form = editable(h('form', { onsubmit: (e) => { e.preventDefault(); this.form.run(() => this.save()); } },
+            field(WIFI_AP.NAME, input('apSsid', { maxLength: SSID_MAX })),
+            field(WIFI_AP.PASSWORD, input('apPassword', { type: 'password', autocomplete: 'new-password',
+                maxLength: WIFI_PASSWORD_MAX })),
+            h('div', { class: 'row' }, h('button', { class: 'primary' }, SETTINGS.SAVE)), this.msg),
+        (f) => f.elements.apSsid.value !== '' && f.elements.apPassword.value !== '');
+        this.element = card(WIFI_AP.TITLE, WIFI_AP.TIP, this.form);
+        this.element.hidden = true;
+        this.forms = [this.form];
+    }
+
+    update({ ap, interface: via }) {
+        this.connection(this.msg);
+        this.element.hidden = !overAp(via);
+        if (ap && !this.form.dirty) {
+            this.form.elements.apSsid.value = ap.ssid;
+            this.form.filled();
+        }
+    }
+
+    // Airfrog restarts the access point with the new settings, which drops
+    // this page's connection until the computer joins the access point
+    // again.
+    async save() {
+        const f = this.form.elements;
+        const ssid = f.apSsid.value;
+        const { errors, fields } = checkWifiAp(ssid, f.apPassword.value);
+        if (!showErrors(this.form, this.msg, errors)) {
+            return;
+        }
+        const saved = WIFI_AP.SAVED;
+        this.setup.expectClose({ message: saved });
+        f.apPassword.value = '';
+        if (await this.setup.save(this.msg, Command.SET_WIFI_AP, fields, saved)) {
+            this.form.dirty = false;
+        } else {
+            this.setup.cancelExpected();
         }
     }
 }
@@ -355,6 +409,12 @@ export class JoinView extends View {
         const { errors, fields } = checkWifi({ ...values, password: keepPassword ? '' : values.password, keepPassword,
             staticIpv4: this.staticIpv4.box.checked });
         if (!showErrors(this.form, this.msg, errors)) {
+            return;
+        }
+        // Airfrog saves a home network over the access point only once it
+        // has a password.
+        if (overAp(setup.state.interface) && !setup.state.hasPassword) {
+            this.msg.say(PASSWORD.FIRST_SETUP, 'bad');
             return;
         }
         const host = setup.state.hostname ? `${setup.state.hostname}.local` : location.host;

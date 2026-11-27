@@ -16,18 +16,21 @@ import {
   ReleaseError, latestRelease, loadFirmware, loadReleases, loadSetup, boardModels,
 } from '../../commissioning/release.js';
 import { DOWNLOAD_TIMEOUT_MS, MODELS } from '../../js/schema.js';
+import { BACKUP_KEY, OTHER_KEY, TEST_KEY, minisig as testMinisig } from '../ui/minisign.mjs';
 
 const RELEASE = new URL('fixtures/releases/v0.2.0/firmware/mini/', import.meta.url);
 const AIRFROG_URL = 'https://meta.test/airfrog/manifest.json';
 const MANIFEST_URL = 'https://images.test/firmware/manifest.json';
-const AIRFROG = { type: 'airfrog', version: 1, ui_manifest: 'https://images.test/ui/manifest.json',
-  firmware_manifest: MANIFEST_URL, js_library: 'https://images.test/js/' };
+const AIRFROG = { type: 'airfrog', version: 1, ui_manifest: { url: 'https://images.test/ui/manifest.json' },
+  firmware_manifest: { url: MANIFEST_URL, key: null }, js_library: 'https://images.test/js/',
+  full_access_websites: ['https://airfrog.org'] };
 // The fixture release's files are served at BASE.
 const BASE = 'https://images.test/firmware/airfrog-mini/v0.2.0/airfrog-mini.factory/';
 const FLASH = 4194304;
 
 const keys = generateKeyPairSync('ed25519');
 const KEY = keys.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+AIRFROG.firmware_manifest.key = KEY;
 
 const sha = (data) => createHash('sha256').update(data).digest('hex');
 const SETUP = new TextEncoder().encode('export const API = 2;\n');
@@ -94,7 +97,7 @@ function fakeFetch(served = {}, replace = {}) {
 test('loads and verifies the firmware manifest', async () => {
   const manifest = await firmwareManifest();
   const { fn } = fakeFetch(signed(manifest));
-  assert.deepEqual(await loadReleases(AIRFROG_URL, KEY, { fetch: fn }), manifest);
+  assert.deepEqual(await loadReleases(AIRFROG_URL, [KEY], { fetch: fn }), manifest);
 });
 
 test('rejects a firmware manifest that is unsigned, signed by another key or invalid', async () => {
@@ -121,15 +124,49 @@ test('rejects a firmware manifest that is unsigned, signed by another key or inv
   };
   for (const [name, served] of Object.entries(cases)) {
     const { fn } = fakeFetch(served);
-    await assert.rejects(loadReleases(AIRFROG_URL, KEY, { fetch: fn }), ReleaseError, name);
+    await assert.rejects(loadReleases(AIRFROG_URL, [KEY], { fetch: fn }), ReleaseError, name);
   }
   {
     const { fn } = fakeFetch({ ...signedAt(AIRFROG_URL, AIRFROG), [MANIFEST_URL]: good[MANIFEST_URL] });
-    await assert.rejects(loadReleases(AIRFROG_URL, KEY, { fetch: fn }), /HTTP 404/, 'without a signature file');
+    await assert.rejects(loadReleases(AIRFROG_URL, [KEY], { fetch: fn }), /HTTP 404/, 'without a signature file');
   }
   const { fn } = fakeFetch();
-  await assert.rejects(loadReleases(AIRFROG_URL, KEY, { fetch: fn }), /HTTP 404/);
-  await assert.rejects(loadReleases(AIRFROG_URL, '', { fetch: fn }), /Manifest key not set/);
+  await assert.rejects(loadReleases(AIRFROG_URL, [KEY], { fetch: fn }), /HTTP 404/);
+  await assert.rejects(loadReleases(AIRFROG_URL, [], { fetch: fn }), /Release keys not set/);
+});
+
+test('the Airfrog manifest signed with either release key, and the firmware manifest with its own key or none', async () => {
+  const manifest = await firmwareManifest();
+  const body = (m) => Buffer.from(JSON.stringify(m, null, 2) + '\n');
+  const at = (url, m, name) => ({ [url]: body(m), [`${url}.minisig`]: Buffer.from(testMinisig(body(m), name)) });
+  const airfrog = (entry) => ({ ...AIRFROG, firmware_manifest: entry });
+  const keysBuiltIn = [TEST_KEY, BACKUP_KEY];
+  const ok = async (served, what) => {
+    const { fn, fetched } = fakeFetch(served);
+    assert.deepEqual(await loadReleases(AIRFROG_URL, keysBuiltIn, { fetch: fn }), manifest, what);
+    return fetched;
+  };
+  const fails = async (served, what) => {
+    const { fn } = fakeFetch(served);
+    await assert.rejects(loadReleases(AIRFROG_URL, keysBuiltIn, { fetch: fn }), ReleaseError, what);
+  };
+  const own = { url: MANIFEST_URL, key: OTHER_KEY };
+  await ok({ ...at(AIRFROG_URL, airfrog(own), 'backup'), ...at(MANIFEST_URL, manifest, 'other') },
+    'the backup key, and the firmware manifest by its own key');
+  await fails({ ...at(AIRFROG_URL, airfrog(own), 'other'), ...at(MANIFEST_URL, manifest, 'other') },
+    'the Airfrog manifest by a key that isn\'t a release key');
+  await fails({ ...at(AIRFROG_URL, airfrog(own), 'release'), ...at(MANIFEST_URL, manifest, 'release') },
+    'the firmware manifest by a release key in place of its own');
+  const fetched = await ok({ ...at(AIRFROG_URL, airfrog({ url: MANIFEST_URL }), 'release'),
+    [MANIFEST_URL]: body(manifest) }, 'without a key over https');
+  assert.ok(!fetched.includes(`${MANIFEST_URL}.minisig`), "without a key the signature file isn't read");
+  const http = 'http://images.test/firmware/manifest.json';
+  await fails({ ...at(AIRFROG_URL, airfrog({ url: http }), 'release'), [http]: body(manifest) },
+    'without a key over http');
+  await fails({ ...at(AIRFROG_URL, airfrog(MANIFEST_URL), 'release'), [MANIFEST_URL]: body(manifest) },
+    'an address in place of the entry');
+  await fails({ ...at(AIRFROG_URL, airfrog({ url: MANIFEST_URL, key: 'ab' }), 'release'),
+    ...at(MANIFEST_URL, manifest, 'release') }, 'a key that isn\'t 64 hex digits');
 });
 
 test('a download that receives nothing in time', async (t) => {
@@ -147,7 +184,7 @@ test('a download that receives nothing in time', async (t) => {
   ];
   for (const fn of answers) {
     for (const [load, message] of [
-      [() => loadReleases(AIRFROG_URL, KEY, { fetch: fn }), 'Release list download failed (timed out).'],
+      [() => loadReleases(AIRFROG_URL, [KEY], { fetch: fn }), 'Release list download failed (timed out).'],
       [() => loadFirmware(release, FLASH, { fetch: fn }), 'Firmware download failed (timed out).'],
       [() => loadSetup(release, { fetch: fn }), 'Release v0.2.0 download failed (timed out).'],
     ]) {

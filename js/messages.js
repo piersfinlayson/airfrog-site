@@ -74,11 +74,20 @@ export const RECONNECTING = 'Reconnecting…';
 /** ERROR OUT_OF_RANGE's text, everywhere. */
 const INVALID_VALUE = 'Invalid value.';
 
+/**
+ * An Airfrog whose firmware this client doesn't support: another Airfrog
+ * manifest address, no release key in common, or fewer than MIN_ITERATIONS
+ * password iterations.
+ */
+export const UNSUPPORTED_FIRMWARE = 'Unsupported Airfrog firmware.';
+
 /** For each AirfrogError code: the text, from its detail. */
 export const ERRORS = {
     TIMEOUT: () => 'No response from Airfrog.',
     PASSWORD_REQUIRED: () => 'Password required.',
     LOGIN_FAILED: () => 'Incorrect password.',
+    /** HELLO's iterations is below MIN_ITERATIONS, so the client doesn't log in. */
+    ITERATIONS_TOO_LOW: () => UNSUPPORTED_FIRMWARE,
     LOGIN_BLOCKED: (s) => s === 1 ? 'Too many failed login attempts. Retry in 1 second.' : s === null || s === undefined ? 'Too many failed login attempts. Retry later.' : `Too many failed login attempts. Retry in ${s} seconds.`,
     PROOF_MISMATCH: () => 'Login failed. Check the Airfrog address.',
     PASSWORD_CHANGED: () => `${CLOSED.PASSWORD_CHANGED} Reconnect with the new password.`,
@@ -101,6 +110,8 @@ export const ERRORS = {
     EXTENSION_UNSUPPORTED: () => 'Extension not supported by this Airfrog.',
     NO_SPACE: () => 'No room for the extension. Remove an extension, then try again.',
     IMAGE_INVALID: () => INVALID_FIRMWARE_FILE,
+    NOT_PERMITTED: () => 'Not permitted over this connection.',
+    SIGNATURE_INVALID: () => 'Invalid signature.',
     RESTARTING: () => RESTARTING,
     CODE: (code) => ERROR_CODES[code] ?? `Airfrog error ${code}.`,
     TRANSFER_TOO_LARGE: (len, max) => `Transfer of ${len} bytes is larger than Airfrog's limit of ${max}`,
@@ -123,13 +134,21 @@ export const CONNECTION = {
     CONNECTING: 'Connecting to Airfrog…',
     LOGGING_IN: 'Logging in…',
     LOG_IN_AGAIN: `${CLOSED.PASSWORD_CHANGED} Log in again.`,
+    /** The login card after the first setup password or a reset over the recovery button AP. */
+    PASSWORD_SAVED: 'Password saved. Log in with the new password.',
     /** Followed by a link to the recovery page. */
     FORGOTTEN: 'Forgotten password: See ',
+    /** In place of FORGOTTEN over the access point, other than the one started with the recovery button. */
+    FORGOTTEN_AP: 'Forgotten password: Hold the recovery button for 3 seconds then reload this page.',
     /** The login card's title and button. */
     LOG_IN: 'Log in',
     PASSWORD: 'Password',
     INVALID_ADDRESS: (host) => `Invalid address ${host}.`,
     NOT_AIRFROG: 'Not an Airfrog at this address. Check the address.',
+    /** Firmware with another manifest address or other release keys, in the airfrog.org UI and its bridge window. */
+    OTHER_FIRMWARE: UNSUPPORTED_FIRMWARE,
+    /** The heading of the login card's reset fields over the access point started with the recovery button. */
+    RESET_PASSWORD: 'Reset password',
     /** A connection closed by this page, or closed before a command. */
     CLOSED: 'Connection to Airfrog closed.',
 };
@@ -167,7 +186,7 @@ export const NETWORK = {
     JOINING_RECONNECT: (ssid, url) => [`Airfrog joining ${ssid}. Open `, { url }, " on that network if this page doesn't reconnect."],
     NOT_JOINED: (ssid) => `Airfrog failed to connect to ${ssid}. Check the network name and password, then select Save and connect.`,
     /** @returns {LinkedText} the warning card while this page uses AP mode after Airfrog joined ssid */
-    AP_JOINED: (ssid, url) => [`Airfrog joined ${ssid}. This page uses Airfrog's AP mode, which will be disabled in 2 minutes. Open `, { url }, ` on ${ssid}.`],
+    AP_JOINED: (ssid, url) => [`Airfrog joined ${ssid}. The Airfrog Access Point will be disabled in 2 minutes. Open `, { url }, ` on ${ssid}.`],
     /** @returns {LinkedText} the status once the connection through AP mode closes */
     JOINED: (ssid, url) => [`Airfrog joined ${ssid}. Open `, { url }, ' on that network.'],
     /** @returns {LinkedText} */
@@ -196,7 +215,7 @@ export const NETWORK = {
     IPV6_ADDRESS: 'IPv6 address',
     MAC_ADDRESS: 'MAC address',
     AP_MODE: 'AP mode',
-    AP_MODE_TIP: 'The Airfrog access point. Password airfrogx. It stops when Airfrog joins a network, or 2 minutes later when a device is connected to it.',
+    AP_MODE_TIP: 'Airfrog Access Point used for setup and recovery.',
     STOP_AP_MODE: 'Stop AP mode',
     POWER_SAVE: 'WiFi power save',
     POWER_SAVE_TIP: 'Uses less power. Airfrog responds more slowly.',
@@ -241,6 +260,17 @@ export const NETWORK = {
     INVALID_ALIAS: (alias) => `Invalid host alias ${alias}. Use up to 253 characters: labels of 1 to 63 letters, digits and hyphens, separated by dots.`,
 };
 
+/** The Access point card, displayed only over the access point. */
+export const WIFI_AP = {
+    TITLE: 'Airfrog Access Point',
+    TIP: NETWORK.AP_MODE_TIP,
+    NAME: 'Network name',
+    PASSWORD: 'Password',
+    /** Airfrog then restarts the access point, which closes this connection. */
+    SAVED: 'Airfrog Access Point settings saved. Reconnect with the new password.',
+    INVALID_PASSWORD: 'Password must be 8 to 63 characters.',
+};
+
 /** The Password card. */
 export const PASSWORD = {
     SET: 'Password set.',
@@ -252,12 +282,27 @@ export const PASSWORD = {
     CONFIRM_PASSWORD: 'Confirm password',
     ENTER_NEW: 'Enter the new password.',
     NOT_MATCHING: "Passwords don't match.",
+    /**
+     * The first setup screen over the access point, above the password fields,
+     * and the Join a network card over the access point without an Airfrog
+     * password.
+     */
+    FIRST_SETUP: 'Set an Airfrog password.',
     /** The card's button and the link in the warning card without a password. */
     SET_PASSWORD: 'Set password',
-    CHANGE_PASSWORD: 'Change password',
     REMOVE_PASSWORD: 'Remove password',
     /** CONFIRM_REMOVE's button. */
     REMOVE: 'Remove',
+};
+
+/** The password rule: INTRO, then each requirement as a bullet. NOT_MET in place of INTRO when a password breaks it. */
+export const PASSWORD_RULE = {
+    INTRO: 'The password must have:',
+    LENGTH: 'At least 8 characters',
+    UPPER: 'An upper case letter',
+    LOWER: 'A lower case letter',
+    NUMBER: 'A number',
+    NOT_MET: "Password doesn't meet these requirements:",
 };
 
 /** The Authorised websites card in the System tab. {site} is a website as siteName() in awp.js displays it. */
@@ -288,6 +333,9 @@ export const UPDATE = {
     /** Airfrog firmware for another model. */
     WRONG_MODEL: 'Invalid firmware file (incorrect Airfrog model).',
     UNSIGNED: 'Unsigned firmware.',
+    UNSIGNED_NOT_HERE: 'Unsigned firmware can only be installed over the Airfrog Access Point started with the recovery button.',
+    /** With the running firmware's version as VALUES.VERSION writes it. */
+    OLDER_NOT_HERE: (version) => `Firmware older than ${version} can only be installed over the Airfrog Access Point started with the recovery button.`,
     /** The Version row's note. */
     LATEST: 'Latest release.',
     /** Followed by why the firmware manifest isn't available. */
@@ -403,6 +451,8 @@ export const VALUES = {
     OPERATION: (operation) => `operation ${operation}`,
     VERSION: (version) => `v${version}`,
     WITH_COMMIT: (version, commit) => `${version} (${commit})`,
+    /** An installed extension's version with its note: unsigned, latest or depublished. */
+    WITH_NOTE: (version, note) => `${version} (${note})`,
     MB: (size) => `${size} MB`,
     KB: (size) => `${size} KB`,
     DBM: (rssi) => `${rssi} dBm`,
@@ -446,6 +496,8 @@ export const TARGET_SETTINGS = {
     INVALID_CHANGE_CHECK: 'Invalid target check interval. Use 0 to 65535 ms.',
     RECOVERY: 'Airfrog recovery',
     RECOVERY_TIP: 'Whether the target can reinstall Airfrog firmware and erase Airfrog settings when Airfrog boots.',
+    /** Below the recovery checkbox, which can't be ticked while recovery can't be enabled. */
+    RECOVERY_NOT_HERE: 'Airfrog recovery can only be enabled over serial or the Airfrog Access Point started with the recovery button.',
 };
 
 /** Each command's action in SERIAL_SETUP.NO_RESPONSE, by the command's name. */
@@ -496,8 +548,9 @@ export const EXTENSIONS = {
     TAB_CHECKBOX: (name) => `${name} tab`,
     /** After the installed version. */
     LATEST: (version) => `latest ${version}`,
-    SIDE_LOADED: 'from file',
-    DEPUBLISHED: 'Depublished',
+    UNSIGNED: 'unsigned',
+    UNSIGNED_NOT_HERE: 'Unsigned extensions can only be installed with the Airfrog CLI.',
+    DEPUBLISHED: 'depublished',
     RUNNING: RUNNING,
     STOPPED: STOPPED,
     UI_ONLY: 'UI only',
@@ -516,7 +569,7 @@ export const EXTENSIONS = {
     ANY_TARGET: 'Any target',
     OTHER_TARGETS: 'Other targets',
     COUNT: (shown, total) => `${shown} of ${total} available extensions`,
-    SIDE_LOAD_CONFIRM: 'Extensions added from a file have full access to Airfrog.',
+    UNSIGNED_CONFIRM: 'Unsigned extensions have full access to Airfrog.',
     REMOVE_CONFIRM: (name) => `Are you sure you want to remove ${name}?`,
     INSTALLING: (name, version) => `Installing ${name} ${version}…`,
     INSTALLED: (name, version) => `Installed ${name} ${version}.`,
@@ -563,20 +616,23 @@ export const RELEASE_LIST = {
 export const HOME_PAGE = {
     TITLE: AIRFROG,
     LOADING: 'Loading…',
-    DOWNLOAD_FAILED: 'Download failed. Check internet access.',
+    DOWNLOAD_FAILED: "Check this browser's internet access.",
     DOWNLOAD_HTTP: (status) => `Download failed (HTTP ${status}).`,
     DOWNLOAD_TIMED_OUT: 'Download failed (timed out).',
     RELEASE_LIST_SIGNATURE: RELEASE_LIST.SIGNATURE,
     RELEASE_LIST_INVALID: RELEASE_LIST.INVALID,
     MANIFEST_SIGNATURE: 'Invalid signature.',
     MANIFEST_INVALID: 'Invalid manifest.',
-    NO_MANIFEST_KEY: 'Rebuild firmware with CONFIG_AIRFROG_MANIFEST_KEY.',
     NEWER_FIRMWARE: 'Newer firmware required. Update firmware.',
     DOWNLOAD_CORRUPT: 'Download corrupt. Reload the page.',
     INCOMPLETE: 'Incomplete release.',
     START_FAILED: 'Start failed. Reload the page.',
     BRIDGE_NOT_LOADED: (reason) => `Bridge window not loaded. ${reason}`,
     UI_FAILED: 'Airfrog UI failed to load. Reload the page.',
+    /** Over the access point, in place of the full user interface. */
+    ACCESS_POINT: 'Airfrog Access Point. Full Airfrog UI not available.',
+    /** After ACCESS_POINT over the access point started with the recovery button. */
+    ACCESS_POINT_BUTTON: 'The Airfrog Access Point will be disabled 5 minutes after the recovery button was pressed.',
 };
 
 /**
@@ -599,6 +655,8 @@ export const BRIDGE = {
     DISCONNECT: 'Disconnect',
     DISCONNECTED: (site, host) => `${site} was disconnected from ${host}.`,
     NOT_CONNECTED: (site, host) => `${site} couldn't connect to ${host}.`,
+    /** The bridge window opened over the access point. */
+    ON_AP: (site, host) => `${site} can't connect to ${host} over the Airfrog Access Point.`,
     RECONNECT_FROM: (site) => `Reconnect from ${site}.`,
     CLOSE: 'Close',
     PASSWORD_CHANGED: (host) => `${host}'s password was changed.`,
@@ -651,7 +709,7 @@ export const COMMISSIONING_CONNECT = {
     NO_PSRAM: 'None',
 };
 
-/** airfrog.org/commissioning's Firmware card. The full user interface also displays MANIFEST_KEY_NOT_SET. */
+/** airfrog.org/commissioning's Firmware card. The full user interface also displays RELEASE_KEYS_NOT_SET. */
 export const COMMISSIONING_FIRMWARE = {
     RELEASE: 'Release',
     INSTALL_FIRMWARE: 'Install firmware',
@@ -661,7 +719,7 @@ export const COMMISSIONING_FIRMWARE = {
     CONFIRM_INSTALL: (version) => `Install firmware ${version}? The Airfrog settings are erased.`,
     /** CONFIRM_INSTALL's button. */
     INSTALL: 'Install',
-    MANIFEST_KEY_NOT_SET: 'Manifest key not set.',
+    RELEASE_KEYS_NOT_SET: 'Release keys not set.',
     /** A download's name. */
     RELEASE_LIST: 'Release list',
     /** A download's name. */

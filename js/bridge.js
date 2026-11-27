@@ -7,8 +7,7 @@
 // to Airfrog, so the password doesn't reach the page, connects the website
 // once it is in Airfrog's authorised websites, and relays AWP messages
 // without counter and hmac between the page and Airfrog. The window forwards
-// only CLAIM, RELEASE, TARGET_CMD, IDENTIFY and AIRFROG_CMD get commands. See
-// "The bridge" in airfrog-v2/docs/ac3-design.md.
+// only CLAIM, RELEASE, TARGET_CMD, IDENTIFY and AIRFROG_CMD get commands.
 
 import {
     AIRFROG_CMD, AirfrogError, AwpSocket, BRIDGE_KEY, CLAIM, CONNECT_TIMEOUT_MS, ERROR, HEADER_RESPONSE, HELLO,
@@ -409,10 +408,14 @@ async function listed(relay, origin) {
  * window loads Airfrog's home page instead.
  * @param {HTMLElement} container - where the bridge displays its state, the
  *        login and its buttons
+ * @param {object} [options]
+ * @param {function(import('./awp.js').Hello): AirfrogError|null} [options.checkHello] -
+ *        called with each connection's HELLO before logging in. An error it
+ *        returns ends the connection with that error
  * @returns {Promise<void>} once the website is connected, or the connection
  *          has failed or been cancelled
  */
-export async function startBridge(container) {
+export async function startBridge(container, { checkHello = null } = {}) {
     const origin = bridgeOrigin(location.hash);
     if (!origin) {
         location.replace(`http://${location.host}/`);
@@ -454,7 +457,7 @@ export async function startBridge(container) {
     let password = null;
     while (!socket) {
         try {
-            socket = await AwpSocket.open(host, password);
+            socket = await AwpSocket.open(host, password, { checkHello });
         } catch (e) {
             if (['PASSWORD_REQUIRED', 'LOGIN_FAILED', 'LOGIN_BLOCKED'].includes(e.code)) {
                 password = await view.askPassword(host, site, e.code === 'PASSWORD_REQUIRED' ? null : e.message);

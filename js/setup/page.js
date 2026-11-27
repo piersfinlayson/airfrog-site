@@ -12,10 +12,11 @@ import { Setup } from './setup.js';
 import { Header } from './header.js';
 import { ConnectionView } from './connection.js';
 import { h, link, message } from './dom.js';
-import { errorText, StaState } from './protocol.js';
+import { errorText, Interface, overAp, StaState } from './protocol.js';
+import { FirstSetupView } from './system.js';
 import { versionText } from './format.js';
 import { AIRFROG_TLD } from '../urls.js';
-import { AIRFROG, FULL_UI_NOT_LOADED, PAGE, PASSWORD, SETTINGS } from '../messages.js';
+import { AIRFROG, FULL_UI_NOT_LOADED, HOME_PAGE, PAGE, PASSWORD, SETTINGS } from '../messages.js';
 
 /**
  * @typedef {object} Tab
@@ -42,19 +43,19 @@ export class Page {
      *        with the state
      * @param {Session} [options.session]
      */
-    constructor({ firmware = null, firmwareError = null, loadFirmware = null, tabs = [], advanced = [], footer = [],
+    constructor({ firmware = null, firmwareError = null, tabs = [], advanced = [], footer = [],
         reason = null, tab = null, recordTab = false, onRender = () => {}, session } = {}) {
         this.session = session ?? new Session(location.host);
         this.recordTab = recordTab;
         this.onRender = onRender;
         this.header = new Header(location.hostname || AIRFROG);
-        this.setup = new Setup({ session: this.session, firmware, firmwareError, loadFirmware,
+        this.setup = new Setup({ session: this.session, firmware, firmwareError,
             onRender: (s) => this.#rendered(s) });
         this.connection = new ConnectionView(this.session);
         this.readMsg = message();
         const v = this.setup.views;
         this.panes = Object.fromEntries([...tabs.map(t => [t.id, t.element]),
-            ['network', h('div', {}, v.wifi.element, v.join.element, v.hostname.element)],
+            ['network', h('div', {}, v.wifi.element, v.join.element, v.hostname.element, v.wifiAp.element)],
             ['system', h('div', {}, v.about.element, v.firmware.element, v.password.element, v.websites.element)],
             ['advanced', h('div', {}, ...advanced, v.targetSettings.element)]]);
         const names = [...tabs.map(t => [t.id, t.name]), ['network', PAGE.NETWORK_TAB], ['system', PAGE.SYSTEM_TAB],
@@ -67,6 +68,12 @@ export class Page {
         // Hidden while Airfrog is in AP mode and not on a network: the
         // browser can't reach airfrog.org, and setup is what the owner came
         // for.
+        // HELLO's interface, from the login card or the open connection
+        this.via = null;
+        // Airfrog's setup alone, over the access point: the full user
+        // interface doesn't load there.
+        this.accessPoint = tabs.length ? null : h('section', { class: 'card', id: 'access-point', role: 'status',
+            hidden: true }, HOME_PAGE.ACCESS_POINT);
         this.reason = reason ? h('section', { class: 'card warn', id: 'reason', role: 'status', hidden: true },
             `${FULL_UI_NOT_LOADED} ${reason}`) : null;
         this.noPassword = h('section', { class: 'card warn', role: 'status', hidden: true }, `${PASSWORD.NOT_SET} `,
@@ -74,7 +81,8 @@ export class Page {
                 v.password.element.scrollIntoView?.(); } }, PASSWORD.SET_PASSWORD));
         this.footerVersion = h('span', {}, AIRFROG);
         this.element = h('div', {}, this.header.element, this.tabs,
-            h('main', {}, this.reason, this.noPassword, v.wifi.joined, this.connection.element, this.content),
+            h('main', {}, this.accessPoint, this.reason, this.noPassword, v.wifi.joined, this.connection.element, v.firstSetup.element,
+                this.content),
             h('footer', {}, this.footerVersion, ' · ',
                 link(AIRFROG_TLD, new URL(AIRFROG_TLD).host, { newTab: true }), ' · ', PAGE.FROM, ' ',
                 link('https://piers.rocks', 'piers.rocks', { newTab: true }), ...footer));
@@ -114,18 +122,32 @@ export class Page {
 
     #rendered(state) {
         this.content.inert = !state.connected;
+        const first = FirstSetupView.shown(state);
+        this.tabs.hidden = first || !this.opened;
+        this.content.hidden = first || !this.opened;
+        const ap = overAp(this.via);
+        if (this.accessPoint) {
+            this.accessPoint.hidden = !ap;
+            const notice = this.via === Interface.AP_BUTTON
+                ? `${HOME_PAGE.ACCESS_POINT} ${HOME_PAGE.ACCESS_POINT_BUTTON}` : HOME_PAGE.ACCESS_POINT;
+            // Replaced only when it changes, so that it is announced once.
+            if (this.accessPoint.textContent !== notice) {
+                this.accessPoint.textContent = notice;
+            }
+        }
         if (this.reason) {
-            this.reason.hidden = !state.ap || (state.ap.on && state.sta?.state !== StaState.CONNECTED);
+            this.reason.hidden = ap || !state.ap || (state.ap.on && state.sta?.state !== StaState.CONNECTED);
         }
         this.header.update(state);
         document.title = this.header.title;
-        this.noPassword.hidden = !state.connected || state.hasPassword;
+        this.noPassword.hidden = !state.connected || state.hasPassword || first;
         this.footerVersion.textContent = state.fw
             ? PAGE.FOOTER_VERSION(versionText(state.fw.version, state.fw.commit)) : AIRFROG;
         this.onRender(state);
     }
 
     #status(status) {
+        this.via = status.via ?? this.via;
         this.connection.update(status);
         this.state.connected = status.state === 'connected';
         this.render();
@@ -135,9 +157,11 @@ export class Page {
         const airfrog = this.session.airfrog;
         this.state.target = airfrog.getTarget();
         this.state.hasPassword = this.session.hasPassword;
+        this.state.interface = airfrog.getInterface();
+        this.via = this.state.interface;
+        this.state.releaseKeys = airfrog.getReleaseKeys();
         this.state.connected = true;
-        this.content.hidden = false;
-        this.tabs.hidden = false;
+        this.opened = true;
         this.render();
         try {
             await this.setup.readAll();

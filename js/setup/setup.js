@@ -11,8 +11,8 @@ import { pbkdf2HmacSha256 } from '../sha256.js';
 import { FLAG_PASSWORD, SALT_LEN, encodeSetPassword } from '../schema.js';
 import { Command, EMPTY, StaState, errorText, parseAuthorisedWebsites, parseBoards, parseFwInfo, parseHostAliases,
     parseHostname, parseHwInfo, parsePinMap, parseSettings, parseWifiAp, parseWifiSta } from './protocol.js';
-import { HostnameView, JoinView, WifiView } from './network.js';
-import { AboutView, AuthorisedWebsitesView, FirmwareView, PasswordView } from './system.js';
+import { HostnameView, JoinView, WifiApView, WifiView } from './network.js';
+import { AboutView, AuthorisedWebsitesView, FirmwareView, FirstSetupView, PasswordView } from './system.js';
 import { TargetSettingsView } from './settings.js';
 import { checkFirmwareManifest } from './releases.js';
 import { takeResult } from './update.js';
@@ -52,6 +52,8 @@ export const READS = {
  * @typedef {object} SetupState
  * @property {boolean} connected
  * @property {boolean} hasPassword
+ * @property {number|null} interface - HELLO's: how this connection reaches Airfrog
+ * @property {Array<Uint8Array>} releaseKeys - HELLO's release keys, empty over serial
  * @property {object|null} hw - GET_HW_INFO's
  * @property {object|null} fw - GET_FW_INFO's
  * @property {string|null} hostname
@@ -76,14 +78,10 @@ export class Setup {
      * @param {object|null} [options.firmware] - the verified firmware
      *        manifest, for its releases
      * @param {string|null} [options.firmwareError] - why there isn't one
-     * @param {function(): Promise<object>} [options.loadFirmware] - loads and
-     *        verifies the firmware manifest, to check a chosen firmware file
-     *        when firmware is null
      * @param {function(SetupState)} [options.onRender] - called after each
      *        redraw
      */
-    constructor({ session = null, transport = null, firmware = null, firmwareError = null, loadFirmware = null,
-        onRender = () => {} }) {
+    constructor({ session = null, transport = null, firmware = null, firmwareError = null, onRender = () => {} }) {
         this.session = session;
         this.transport = transport;
         this.firmware = null;
@@ -95,12 +93,12 @@ export class Setup {
                 this.firmwareError = e.message;
             }
         }
-        this.loadFirmware = loadFirmware;
         this.onRender = onRender;
         this.updating = false;
         this.wifiTimer = null;
         /** @type {SetupState} */
-        this.state = { connected: Boolean(transport), hasPassword: Boolean(transport?.hello.flags & FLAG_PASSWORD), hw: null,
+        this.state = { connected: Boolean(transport), hasPassword: Boolean(transport?.hello.flags & FLAG_PASSWORD),
+            interface: transport?.hello.interface ?? null, releaseKeys: [], hw: null,
             fw: null, hostname: null, sta: null, ap: null, aliases: null, websites: null, pinMap: null, settings: null,
             boards: null, target: null, joining: null };
         this.joinSince = 0;
@@ -108,6 +106,7 @@ export class Setup {
         this.staReadAt = 0;
         this.views = {
             wifi: new WifiView(this), join: new JoinView(this), hostname: new HostnameView(this),
+            wifiAp: new WifiApView(this), firstSetup: new FirstSetupView(this),
             password: new PasswordView(this), websites: new AuthorisedWebsitesView(this), about: new AboutView(),
             targetSettings: new TargetSettingsView(this),
         };

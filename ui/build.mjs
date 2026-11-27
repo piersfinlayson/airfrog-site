@@ -5,10 +5,13 @@
 // Bundles src/main.js into one ES module with esbuild. ci/build-ui.sh runs
 // it with the path of the pinned esbuild and the node_modules directory of
 // noble-ed25519 and noble-hashes. Their licences go at the end of the
-// bundle. --manifest-key replaces commissioning/manifest-key.js with another
-// module that exports MANIFEST_KEY and AIRFROG_MANIFEST, for example with a
-// test key. --schema replaces js/schema.js with another, for example one
-// with the test models.
+// bundle. --schema replaces js/schema.js with another, for example one with
+// the test models.
+//
+// The environment variables AIRFROG_MANIFEST, the Airfrog manifest's
+// address, and AIRFROG_KEYS, release keys in hex separated by commas,
+// replace commissioning/release-keys.js's. The build fails when two keys
+// have the same key ID, their first 8 bytes.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,7 +22,6 @@ const { values: args } = parseArgs({
     options: {
         esbuild: { type: 'string' },
         'node-modules': { type: 'string' },
-        'manifest-key': { type: 'string' },
         schema: { type: 'string' },
         'ui-version': { type: 'string' },
         banner: { type: 'string' },
@@ -41,11 +43,43 @@ function licences(dir) {
     });
 }
 
-const manifestKey = {
-    name: 'manifest-key',
+/**
+ * commissioning/release-keys.js's exports with the environment's overrides.
+ * Exits when a key isn't 64 hex digits or two keys have the same key ID.
+ */
+async function releaseKeys() {
+    const own = await import(new URL('../commissioning/release-keys.js', import.meta.url).href);
+    const manifest = process.env.AIRFROG_MANIFEST || own.AIRFROG_MANIFEST;
+    const keys = process.env.AIRFROG_KEYS
+        ? process.env.AIRFROG_KEYS.split(',').map(k => k.trim().toLowerCase()) : own.RELEASE_KEYS;
+    const ids = new Set();
+    for (const key of keys) {
+        if (!/^[0-9a-f]{64}$/.test(key)) {
+            console.error(`AIRFROG_KEYS: ${key} isn't an Ed25519 public key in hex`);
+            process.exit(1);
+        }
+        if (ids.has(key.slice(0, 16))) {
+            console.error(`AIRFROG_KEYS: two keys have the key ID ${key.slice(0, 16)}`);
+            process.exit(1);
+        }
+        ids.add(key.slice(0, 16));
+    }
+    return { manifest, keys };
+}
+
+const overridden = process.env.AIRFROG_MANIFEST || process.env.AIRFROG_KEYS;
+const { manifest, keys } = await releaseKeys();
+
+const releaseKeysModule = {
+    name: 'release-keys',
     setup(build) {
-        build.onResolve({ filter: /\/commissioning\/manifest-key\.js$/ }, () => ({
-            path: path.resolve(args['manifest-key']),
+        build.onResolve({ filter: /\/commissioning\/release-keys\.js$/ }, () => ({
+            path: 'release-keys', namespace: 'release-keys',
+        }));
+        build.onLoad({ filter: /.*/, namespace: 'release-keys' }, () => ({
+            contents: `export const RELEASE_KEYS = ${JSON.stringify(keys)};\n`
+                + `export const AIRFROG_MANIFEST = ${JSON.stringify(manifest)};\n`,
+            loader: 'js',
         }));
     },
 };
@@ -72,7 +106,7 @@ await esbuild.build({
         __UI_VERSION__: JSON.stringify(args['ui-version']),
     },
     nodePaths: [args['node-modules']],
-    plugins: [args['manifest-key'] && manifestKey, args.schema && schema].filter(Boolean),
+    plugins: [overridden && releaseKeysModule, args.schema && schema].filter(Boolean),
     loader: { '.webp': 'dataurl' },
     logLevel: 'warning',
 });

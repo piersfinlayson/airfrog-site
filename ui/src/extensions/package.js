@@ -2,11 +2,14 @@
 //
 // MIT License
 
-// An extension package, NAME-VERSION.afx: a zip with extension-meta.json,
+// An extension file: an extension package or one extension image. A
+// package, NAME-VERSION.afx, is a zip with extension-meta.json,
 // extension.wasm when the extension has a module, and an extension image for
-// each model in images/ (ac4-design.md section 13).
+// each model in images/. A package is unsigned. An extension image file is a
+// signed file or an unsigned image.
 
 import { decodeExtImage, EXT_IMAGE_MAGIC } from '../../../js/schema.js';
+import { readSignedFile } from '../../../js/signed.js';
 import { ERRORS, EXTENSIONS } from '../../../js/messages.js';
 import { ExtensionError, checkHeader, imageMetadata, parseMetadata, pickImage, wamrText } from './list.js';
 import { readZip } from './zip.js';
@@ -16,6 +19,43 @@ const MAX_ENTRY = 1024 * 1024;
 
 /** The most bytes the package entries read may hold together. */
 const MAX_TOTAL = 4 * 1024 * 1024;
+
+/**
+ * Reads an extension file: an extension image file, or a package with the
+ * extension image for this Airfrog picked from it.
+ * @param {Uint8Array} bytes - the file
+ * @param {number} model - GET_HW_INFO's
+ * @param {string} wamr - GET_FW_INFO's, for example 2.4.5
+ * @returns {Promise<{metadata: object, image: Uint8Array, signature: Uint8Array|null}>}
+ *          the image's extension metadata, the image and its signature,
+ *          null when it is unsigned
+ * @throws {ExtensionError} INVALID_FILE's text, or EXTENSION_UNSUPPORTED's
+ *         when the image isn't for this Airfrog
+ */
+export async function readExtensionFile(bytes, model, wamr) {
+    if (decodeExtImage(bytes)?.magic !== EXT_IMAGE_MAGIC) {
+        return { ...await readPackage(bytes, model, wamr), signature: null };
+    }
+    const file = readSignedFile(bytes, 'extension');
+    const header = file && decodeExtImage(file.image);
+    if (!header) {
+        throw new ExtensionError(EXTENSIONS.INVALID_FILE);
+    }
+    const found = { model: header.model, wamr: wamrText(header.wamr) };
+    if (!pickImage([found], model, wamr)) {
+        throw new ExtensionError(ERRORS.EXTENSION_UNSUPPORTED());
+    }
+    let metadata = null;
+    try {
+        metadata = imageMetadata(file.image, checkHeader(file.image, { name: header.name, ...found }));
+    } catch (e) {
+        // Invalid below
+    }
+    if (metadata?.name !== header.name) {
+        throw new ExtensionError(EXTENSIONS.INVALID_FILE);
+    }
+    return { metadata, image: file.image, signature: file.signature };
+}
 
 /**
  * Reads an extension package and picks the extension image for this

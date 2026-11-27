@@ -2,11 +2,10 @@
 //
 // MIT License
 
-// Airfrog's releases, from the firmware manifest: downloading an Airfrog
-// firmware release's files, and importing the release's Airfrog's internal JS
-// setup module. Reading and verifying a manifest through the Airfrog manifest,
-// which airfrog.org/cli also uses. Also the released models whose firmware
-// runs on a board.
+// Airfrog's releases from the firmware manifest: downloading a release's
+// files and importing its Airfrog internal JS setup module. Also reading and
+// verifying a manifest through the Airfrog manifest, which airfrog.org/cli
+// uses, and the released models whose firmware runs on a board.
 
 import { download } from '../js/setup/download.js';
 import { ReleaseError, checkFirmwareManifest } from '../js/setup/releases.js';
@@ -54,30 +53,37 @@ async function get(url, fetchFn, what, options = {}) {
 }
 
 /**
- * Downloads a manifest and its minisign signature file, url with .minisig
- * added, verifies the signature with key, the manifest key's public half in
- * hex, and checks its type. The signature is minisign's legacy Ed25519
- * signature on the file's second line.
+ * Downloads a manifest and checks its type. With keys, public keys in hex,
+ * its minisign signature file, url with .minisig added, is downloaded too
+ * and verified with the key its key ID selects. The signature is minisign's
+ * legacy Ed25519 signature on the file's second line. Without keys, url must
+ * be https.
  * @returns {Promise<object>} the manifest
  */
-async function signedManifest(url, key, type, fetchFn) {
+async function readManifest(url, keys, type, fetchFn) {
   const list = COMMISSIONING_FIRMWARE.RELEASE_LIST;
+  if (!keys.length && !url.startsWith('https://')) {
+    throw new ReleaseError(RELEASE_LIST.INVALID);
+  }
   const [body, minisig] = await Promise.all([get(url, fetchFn, list, { cache: 'no-cache' }),
-    get(`${url}.minisig`, fetchFn, list, { cache: 'no-cache' })]);
-  let signature = null;
-  try {
-    const line = new TextDecoder().decode(minisig).split('\n')[1];
-    signature = Uint8Array.from(atob(line.trim()), (c) => c.charCodeAt(0));
-  } catch {
-    // An invalid signature fails below.
-  }
-  let valid = false;
-  if (signature?.length === 74 && signature[0] === 0x45 && signature[1] === 0x64) {
-    const publicKey = await crypto.subtle.importKey('raw', fromHex(key), { name: 'Ed25519' }, false, ['verify']);
-    valid = await crypto.subtle.verify({ name: 'Ed25519' }, publicKey, signature.subarray(10), body);
-  }
-  if (!valid) {
-    throw new ReleaseError(RELEASE_LIST.SIGNATURE);
+    keys.length ? get(`${url}.minisig`, fetchFn, list, { cache: 'no-cache' }) : null]);
+  if (keys.length) {
+    let signature = null;
+    try {
+      const line = new TextDecoder().decode(minisig).split('\n')[1];
+      signature = Uint8Array.from(atob(line.trim()), (c) => c.charCodeAt(0));
+    } catch {
+      // An invalid signature fails below.
+    }
+    const key = signature?.length === 74 ? keys.find((k) => k.startsWith(hex(signature.subarray(2, 10)))) : null;
+    let valid = false;
+    if (key && signature[0] === 0x45 && signature[1] === 0x64) {
+      const publicKey = await crypto.subtle.importKey('raw', fromHex(key), { name: 'Ed25519' }, false, ['verify']);
+      valid = await crypto.subtle.verify({ name: 'Ed25519' }, publicKey, signature.subarray(10), body);
+    }
+    if (!valid) {
+      throw new ReleaseError(RELEASE_LIST.SIGNATURE);
+    }
   }
   let manifest;
   try {
@@ -92,20 +98,21 @@ async function signedManifest(url, key, type, fetchFn) {
 }
 
 /**
- * Downloads and verifies the Airfrog manifest at url, then the manifest of
- * type at the Airfrog manifest's field. key is the manifest key's public half
- * in hex, which signs both.
+ * Downloads and verifies the Airfrog manifest at url, signed with
+ * one of keys, the release keys in hex. Then the manifest of type at the
+ * Airfrog manifest's field, signed with the field's key when it has one.
  * @returns {Promise<object>} the manifest of type
  */
-export async function loadManifest(url, key, field, type, { fetch: fetchFn = fetch } = {}) {
-  if (!key) {
-    throw new ReleaseError(COMMISSIONING_FIRMWARE.MANIFEST_KEY_NOT_SET);
+export async function loadManifest(url, keys, field, type, { fetch: fetchFn = fetch } = {}) {
+  if (!keys.length) {
+    throw new ReleaseError(COMMISSIONING_FIRMWARE.RELEASE_KEYS_NOT_SET);
   }
-  const airfrog = await signedManifest(url, key, 'airfrog', fetchFn);
-  if (typeof airfrog[field] !== 'string') {
+  const airfrog = await readManifest(url, keys, 'airfrog', fetchFn);
+  const entry = airfrog[field];
+  if (typeof entry?.url !== 'string' || !(entry.key === undefined || /^[0-9a-f]{64}$/.test(entry.key))) {
     throw new ReleaseError(RELEASE_LIST.INVALID);
   }
-  return signedManifest(airfrog[field], key, type, fetchFn);
+  return readManifest(entry.url, entry.key ? [entry.key] : [], type, fetchFn);
 }
 
 /**
@@ -113,8 +120,8 @@ export async function loadManifest(url, key, field, type, { fetch: fetchFn = fet
  * at url.
  * @returns {Promise<object>} the firmware manifest
  */
-export async function loadReleases(url, key, options = {}) {
-  return checkFirmwareManifest(await loadManifest(url, key, 'firmware_manifest', 'firmware', options));
+export async function loadReleases(url, keys, options = {}) {
+  return checkFirmwareManifest(await loadManifest(url, keys, 'firmware_manifest', 'firmware', options));
 }
 
 /**

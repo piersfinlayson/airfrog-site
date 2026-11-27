@@ -5,7 +5,7 @@
 // The target settings: board, boot window, change checks and recovery.
 
 import { boardName } from './format.js';
-import { BOOT_WINDOW_AUTO, Command } from './protocol.js';
+import { BOOT_WINDOW_AUTO, Command, recoveryAllowed } from './protocol.js';
 import { checkSettings } from './validate.js';
 import { card, changed, check, editable, field, h, input, message, showErrors } from './dom.js';
 import { SETTINGS, TARGET_SETTINGS } from '../messages.js';
@@ -23,6 +23,7 @@ export class TargetSettingsView {
         });
         this.bootWindowMs = input('bootWindowMs', { inputMode: 'numeric' });
         this.recovery = check('recovery', TARGET_SETTINGS.RECOVERY, TARGET_SETTINGS.RECOVERY_TIP);
+        this.recoveryNote = h('p', { class: 'note', hidden: true }, TARGET_SETTINGS.RECOVERY_NOT_HERE);
         this.form = editable(h('form', { onsubmit: (e) => { e.preventDefault(); this.form.run(() => this.save()); } },
             field(TARGET_SETTINGS.BOARD_TYPE, this.board, TARGET_SETTINGS.BOARD_TYPE_TIP),
             field(TARGET_SETTINGS.BOOT_WINDOW,
@@ -30,10 +31,18 @@ export class TargetSettingsView {
                 TARGET_SETTINGS.BOOT_WINDOW_TIP),
             field(TARGET_SETTINGS.CHANGE_CHECK, input('changeCheckMs', { inputMode: 'numeric' }),
                 TARGET_SETTINGS.CHANGE_CHECK_TIP),
-            this.recovery.element,
+            this.recovery.element, this.recoveryNote,
             h('div', { class: 'row' }, h('button', { class: 'primary' }, SETTINGS.SAVE)),
             this.msg), (f) => changed(f) && Boolean(this.setup.state.settings));
         this.element = card(TARGET_SETTINGS.TITLE, null, this.form);
+    }
+
+    /**
+     * Whether this connection can't turn recovery on. Turning it off, and
+     * leaving it on, are allowed on every connection.
+     */
+    recoveryRefused(on) {
+        return on && !this.setup.state.settings?.recovery && !recoveryAllowed(this.setup.state.interface);
     }
 
     update({ settings, pinMap, boards }) {
@@ -41,6 +50,9 @@ export class TargetSettingsView {
             this.airfrog = this.setup.link;
             this.msg.say('');
         }
+        const refused = this.recoveryRefused(true);
+        this.recovery.box.disabled = refused;
+        this.recoveryNote.hidden = !refused;
         if (!settings || !boards || this.form.dirty) {
             return;
         }
@@ -73,6 +85,10 @@ export class TargetSettingsView {
             wifiPowerSave: this.setup.state.settings?.wifiPowerSave, wifiRescanS: this.setup.state.settings?.wifiRescanS,
             wifiRescanDb: this.setup.state.settings?.wifiRescanDb });
         if (!showErrors(this.form, this.msg, errors)) {
+            return;
+        }
+        if (this.recoveryRefused(this.recovery.box.checked)) {
+            this.msg.say(TARGET_SETTINGS.RECOVERY_NOT_HERE, 'bad');
             return;
         }
         if (await this.setup.save(this.msg, Command.SET_SETTINGS, fields, SETTINGS.SAVED)) {

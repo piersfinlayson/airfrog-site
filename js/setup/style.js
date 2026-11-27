@@ -111,6 +111,8 @@ p.msg { margin: 0; }
 .actions + .msg { margin-top: 10px; }
 .msg a { color: var(--link); }
 .note { color: var(--muted); font-size: 14px; margin: 0; }
+.rule ul { margin: 2px 0 0; padding-left: 20px; }
+.rule-intro.bad { color: var(--bad); }
 .content[inert] { opacity: 0.45; }
 progress { width: 100%; max-width: 420px; height: 10px; accent-color: var(--accent); }
 pre.log { margin: 8px 0 0; max-height: 320px; overflow: auto; padding: 8px 10px; background: var(--card);

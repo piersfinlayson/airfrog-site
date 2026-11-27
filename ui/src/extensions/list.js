@@ -3,11 +3,11 @@
 // MIT License
 
 // The extensions manifest (the signed list of the Airfrog Extension
-// Repository), extension metadata and extension images.
-// airfrog-v2/docs/ac4-design.md section 13 specifies them. ../manifests.js
+// Repository), extension metadata and extension images. ../manifests.js
 // checks the extensions manifest's signature, type and version.
 
 import { sha256 } from '../../../js/sha256.js';
+import { readSignedFile } from '../../../js/signed.js';
 import { hex } from '../../../js/setup/bytes.js';
 import {
     EXT_IMAGE_MAGIC, EXT_METADATA_MAX, EXT_NAME_MAX, Firmware, decodeExtImage,
@@ -44,8 +44,8 @@ export function isLocal(url) {
  * The extension UI's address, or null when it isn't one the Airfrog UI
  * loads: https, or with local http on 127.0.0.1 or localhost (D1a).
  * @param {*} ui - extension metadata's ui
- * @param {boolean} local - whether a local address is allowed: for a
- *        side-loaded extension, or one from a repository on a local address
+ * @param {boolean} local - whether a local address is allowed: for an
+ *        unsigned extension, or one from a repository on a local address
  * @returns {string|null}
  */
 export function uiAddress(ui, local) {
@@ -189,18 +189,25 @@ export function imageMetadata(bytes, header) {
 }
 
 /**
- * Checks a downloaded extension image against its entry in the extension
- * list: size and SHA-256, then its header.
- * @param {Uint8Array} bytes
+ * Checks a downloaded extension image file against its entry in the
+ * extension list: size and SHA-256, then the image's header.
+ * @param {Uint8Array} bytes - the file, a signed file
  * @param {string} name
  * @param {{model: number, wamr: string, size: number, sha256: string}} image
+ * @returns {{image: Uint8Array, signature: Uint8Array|null}} the image and
+ *          its signature
  * @throws {ExtensionError}
  */
 export function checkDownload(bytes, name, image) {
     if (bytes.length !== image.size || hex(sha256(bytes)) !== image.sha256) {
         throw new ExtensionError(EXTENSIONS.CORRUPT);
     }
-    checkHeader(bytes, { name, model: image.model, wamr: image.wamr });
+    const file = readSignedFile(bytes, 'extension');
+    if (!file) {
+        throw new ExtensionError(ERRORS.EXTENSION_INVALID());
+    }
+    checkHeader(file.image, { name, model: image.model, wamr: image.wamr });
+    return file;
 }
 
 /**

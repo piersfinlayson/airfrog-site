@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Cdp } from './harness.mjs';
+import { PASSWORD, PASSWORD_RULE } from '../../../js/messages.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -100,18 +101,33 @@ try {
     check(nets.length === 3 && nets[0] === 'bench-net (padlock)' && nets[2] === 'corp-netNot supported',
         `scans over serial (${nets.join(', ')})`);
 
+    check(await page.eval(`document.body.innerText.includes(${JSON.stringify(PASSWORD_RULE.INTRO)})
+        && document.querySelectorAll('.rule li').length > 0`), 'the password rule is displayed');
     await page.eval(`(() => { const f = document.querySelector('input[name=repeat]').form;
         f.password.value = 'frog pw'; f.repeat.value = 'frog pw'; f.requestSubmit(); return true; })()`);
+    await page.until(`[...document.querySelectorAll('section.card')].find(c => c.querySelector('h2')?.textContent
+        === ${JSON.stringify(PASSWORD.TITLE)}).querySelector('.rule-intro.bad')?.textContent
+        === ${JSON.stringify(PASSWORD_RULE.NOT_MET)}`, 5000);
+    check(!await page.eval('window.fake.password'), "a password that doesn't follow the rule isn't sent");
+    await page.eval(`(() => { const f = document.querySelector('input[name=repeat]').form;
+        f.password.value = 'Frog pw 1'; f.repeat.value = 'Frog pw 1'; f.requestSubmit(); return true; })()`);
     await page.until(`/Password set/.test(${msgOf('Password')})`, 20000);
     check(Boolean(await page.eval('window.fake.password')), 'sets the password over serial, without login');
+    check(await page.eval(`(i => i.textContent === ${JSON.stringify(PASSWORD_RULE.INTRO)} && !i.classList.contains('bad'))(
+        document.querySelector('.rule-intro'))`), 'the rule\'s intro is back once the password follows it');
     check(await page.eval(`document.body.innerText.includes('Password set.')`), 'then displays Password set.');
 
+    check(await page.eval(`(b => !b.checked && !b.disabled)(document.querySelector('input[name=recovery]'))`)
+        && await page.eval(`!document.body.innerText.includes('Airfrog recovery can be turned on only')`),
+    'recovery through the target is off by default, and can be turned on over serial');
     await page.eval(`(() => { const i = document.querySelector('input[name=changeCheckMs]'); i.value = '500';
-        i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+        i.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('input[name=recovery]').click();
+        return true; })()`);
     await page.eval(click('Target settings', 'Save'));
     await page.until(`/Saved/.test(${msgOf('Target settings')})`);
     const settings = await page.eval('window.fake.settings');
-    check(settings.changeCheckMs === 500 && settings.flags === 1, `saves the target settings (${JSON.stringify(settings)})`);
+    check(settings.changeCheckMs === 500 && settings.flags === 1,
+        `saves the target settings with recovery turned on (${JSON.stringify(settings)})`);
 
     // The Authorised websites card, as on airfrog.org/commissioning
     const WEBSITES = 'Authorised websites';

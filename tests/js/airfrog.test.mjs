@@ -9,16 +9,19 @@
 
 import {
     FakeAirfrog, FakeWebSocket, TARGETS, AIRFROG_CMD, CLAIM, RELEASE, TARGET_CMD, IDENTIFY, EXT_CMD, EXT_NOTIFY,
-    RESPONSE, PICOBOOT_RP2350_SWD,
+    RESPONSE, PICOBOOT_RP2350_SWD, TEST_KEY, TEST_MANIFEST,
 } from './fake-airfrog.mjs';
 
 import crypto from 'node:crypto';
 
 globalThis.WebSocket = FakeWebSocket;
 
-const { Airfrog, AirfrogError, Service, Operation, Firmware, IdentifyFlag, IdentifyResult, PinLevel, ExtensionFlag } =
-    await import('../../js/airfrog.js');
+const {
+    Airfrog, AirfrogError, Service, Operation, Firmware, IdentifyFlag, IdentifyResult, Interface, PinLevel, ExtensionFlag,
+    SetExtensionFlag,
+} = await import('../../js/airfrog.js');
 const schema = await import('../../js/schema.js');
+const { BRIDGE, ERRORS } = await import('../../js/messages.js');
 
 console.log = () => {};
 console.debug = () => {};
@@ -52,6 +55,9 @@ function serve(config) {
     const { fake, host } = serve();
     const airfrog = await Airfrog.connect(host);
     check(airfrog.getRevision() === 1 && airfrog.getMaxTransfer() === 4096, 'connect reads HELLO');
+    check(airfrog.getInterface() === Interface.STATION && airfrog.getManifestUrl() === TEST_MANIFEST
+        && airfrog.getReleaseKeys().length === 1 && Buffer.from(airfrog.getReleaseKeys()[0]).equals(TEST_KEY)
+        && !airfrog.hasPassword(), 'connect reads HELLO\'s interface, manifest_url and keys');
     check(airfrog.getHost() === host, 'getHost()');
     const t = airfrog.getTarget();
     check(t.identified() && !t.running() && t.offers(Service.PICOBOOT_RP2350_SWD)
@@ -65,7 +71,7 @@ function serve(config) {
 
 // An unknown message type before the LOGIN response
 {
-    const { fake, host } = serve({ password: 'frog', iterations: 1000 });
+    const { fake, host } = serve({ password: 'frog' });
     fake.beforeNext = { type: 0x0042, payload: Buffer.alloc(3) };
     const airfrog = await Airfrog.connect(host, 'frog').catch(e => e);
     check(airfrog instanceof Airfrog && fake.closes.length === 0, 'an unknown type during login is ignored');
@@ -82,7 +88,7 @@ function serve(config) {
 
 // Login
 {
-    const { fake, host } = serve({ password: 'frog', iterations: 2000 });
+    const { fake, host } = serve({ password: 'frog', iterations: 100001 });
     const airfrog = await Airfrog.connect(host, 'frog');
     await airfrog.claim(1000);
     const r = await airfrog.targetCmd(Service.PICOBOOT_RP2350_SWD, Operation.PICOBOOT_RP2350_SWD_INTERFACE_RESET,
@@ -95,6 +101,7 @@ function serve(config) {
 
     let e = await rejects(Airfrog.connect(host));
     check(e instanceof AirfrogError && e.code === 'PASSWORD_REQUIRED', `no password: PASSWORD_REQUIRED (${e?.code})`);
+    check(e?.detail?.interface === Interface.STATION, "PASSWORD_REQUIRED's detail is HELLO");
     e = await rejects(Airfrog.connect(host, 'toad'));
     check(e?.code === 'LOGIN_FAILED' && e.message === 'Incorrect password.', `wrong password: LOGIN_FAILED (${e?.code})`);
 }
@@ -238,9 +245,57 @@ function serve(config) {
     check(closed?.code === 'PASSWORD_CHANGED', 'Airfrog\'s close code reaches the close event');
 }
 
+// K is computed without a connection open, and LOGIN follows HELLO at once
+{
+    const { fake, host } = serve({ password: 'Frog pond 1' });
+    const airfrog = await Airfrog.connect(host, 'Frog pond 1');
+    const sessions = [...new Set(fake.received.map(m => m.session))];
+    check(fake.opened === 2 && !fake.received.some(m => m.session === 1)
+        && fake.received.find(m => m.session === 2)?.type === 2,
+    'without K: the first connection is closed after HELLO, and the next sends LOGIN first');
+    airfrog.close();
+    const again = await Airfrog.connect(host, 'Frog pond 1');
+    check(fake.opened === 3 && fake.received.filter(m => m.session === 3)[0]?.type === 2,
+        `with K kept for HELLO's salt and iterations: one connection (${sessions})`);
+    again.close();
+    fake.salt = crypto.randomBytes(16);
+    fake.key = crypto.pbkdf2Sync('Frog pond 1', fake.salt, fake.config.iterations, 32, 'sha256');
+    const changed = await Airfrog.connect(host, 'Frog pond 1');
+    check(!changed.isClosed() && fake.opened === 5, 'a new salt: K is computed again');
+    changed.close();
+}
+
+// Iterations below MIN_ITERATIONS
+{
+    const { fake, host } = serve({ password: 'frog', iterations: schema.MIN_ITERATIONS - 1 });
+    let e = await rejects(Airfrog.connect(host, 'frog'));
+    check(e?.code === 'ITERATIONS_TOO_LOW' && e.detail === schema.MIN_ITERATIONS - 1
+        && e.message === ERRORS.ITERATIONS_TOO_LOW(), `iterations below MIN_ITERATIONS: ${e?.message}`);
+    check(!fake.received.some(m => m.type === 2), 'below MIN_ITERATIONS LOGIN isn\'t sent');
+    e = await rejects(Airfrog.connect(host));
+    check(e?.code === 'ITERATIONS_TOO_LOW', 'below MIN_ITERATIONS fails before the password is asked for');
+    const open = serve({ iterations: 1 });
+    const airfrog = await Airfrog.connect(open.host);
+    check(!airfrog.isClosed(), 'without a password the iterations don\'t matter');
+    airfrog.close();
+}
+
+// checkHello
+{
+    const { fake, host } = serve({ password: 'frog' });
+    let seen = null;
+    const refused = new AirfrogError('OTHER_FIRMWARE', 'x', 'other firmware');
+    const e = await rejects(Airfrog.connect(host, 'frog', { checkHello: (hello) => { seen = hello; return refused; } }));
+    check(e === refused && seen?.manifestUrl === TEST_MANIFEST && !fake.received.some(m => m.type === 2),
+        'checkHello() sees HELLO, and its error ends the connection before LOGIN');
+    const airfrog = await Airfrog.connect(host, 'frog', { checkHello: () => null });
+    check(!airfrog.isClosed(), 'checkHello() returning null logs in');
+    airfrog.close();
+}
+
 // setPassword()
 {
-    const { fake, host } = serve({ iterations: 1500 });
+    const { fake, host } = serve({ iterations: 100002 });
     let airfrog = await Airfrog.connect(host);
     let closed = null;
     airfrog.addEventListener('close', ev => { closed = ev.detail; });
@@ -249,48 +304,88 @@ function serve(config) {
     const fields = fake.received.at(-1).payload.subarray(2);
     const salt = fields.subarray(32);
     check(fields.length === 48 && salt.some(b => b !== 0)
-        && fields.subarray(0, 32).equals(crypto.pbkdf2Sync('newfrog', salt, 1500, 32, 'sha256')),
-        'setPassword() sends K from a random salt and HELLO\'s iterations');
+        && fields.subarray(0, 32).equals(crypto.pbkdf2Sync('newfrog', salt, 100002, 32, 'sha256')),
+        'setPassword() without a password sends K in the clear, from a random salt and HELLO\'s iterations');
     check(closed?.code === 'PASSWORD_CHANGED' && airfrog.isClosed(), 'the close event reports PASSWORD_CHANGED');
     let e = await rejects(Airfrog.connect(host));
     check(e?.code === 'PASSWORD_REQUIRED', 'the new password is required');
     airfrog = await Airfrog.connect(host, 'newfrog');
+    const s = fake.sessions.values().next().value.key;
+    await airfrog.setPassword('Toad2026x');
+    await sleep(10);
+    const changed = fake.received.at(-1).payload.subarray(2);
+    const k = crypto.pbkdf2Sync('Toad2026x', changed.subarray(32), 100002, 32, 'sha256');
+    const pad = crypto.createHmac('sha256', s).update('password').update(changed.subarray(32)).digest();
+    check(!changed.subarray(0, 32).equals(k) && changed.subarray(0, 32).equals(Buffer.from(k.map((b, i) => b ^ pad[i]))),
+        'logged in, setPassword() sends K XOR HMAC-SHA256(S, "password" ‖ salt)');
+    airfrog = await Airfrog.connect(host, 'Toad2026x');
+    check(!airfrog.isClosed(), 'Airfrog decrypts the key: the new password logs in');
+    const s2 = fake.sessions.values().next().value.key;
     await airfrog.setPassword('');
     await sleep(10);
-    check(fake.received.at(-1).payload.subarray(2).every(b => b === 0), 'an empty password sends zeros');
+    const removal = fake.received.at(-1).payload.subarray(2);
+    const zeroPad = crypto.createHmac('sha256', s2).update('password').update(Buffer.alloc(16)).digest();
+    check(removal.subarray(0, 32).equals(zeroPad) && removal.subarray(32).every(b => b === 0),
+        'logged in, an empty password sends K = 0 and salt = 0, K XORed with the pad');
     airfrog = await Airfrog.connect(host);
     check(!airfrog.isClosed(), 'an empty password removes it');
     airfrog.close();
 }
 
+// resetPassword()
+{
+    const { fake, host } = serve({ password: 'frog', interface: Interface.AP_BUTTON });
+    await Airfrog.resetPassword(host, 'Newt2026x');
+    await sleep(10);
+    check(fake.opened === 2 && fake.received.length === 1 && fake.received[0].session === 2,
+        'resetPassword(): a connection reads HELLO, K is computed, and the next sends SET_PASSWORD first');
+    check(fake.received.map(m => m.type).join() === String(AIRFROG_CMD) && fake.sentKey
+        .equals(crypto.pbkdf2Sync('Newt2026x', fake.salt, schema.MIN_ITERATIONS, 32, 'sha256')),
+        'resetPassword() sends SET_PASSWORD before LOGIN, its key in the clear');
+    const airfrog = await Airfrog.connect(host, 'Newt2026x');
+    check(!airfrog.isClosed(), 'resetPassword(): the new password logs in');
+    airfrog.close();
+    const station = serve({ password: 'frog' });
+    const e = await rejects(Airfrog.resetPassword(station.host, 'Newt2026x'));
+    check(e?.code === 'NOT_PERMITTED' && e.message === ERRORS.NOT_PERMITTED(),
+        `resetPassword() elsewhere: NOT_PERMITTED (${e?.message})`);
+}
+
+// setWifiAp() and getWifiAp()
+{
+    const { fake, host } = serve({ interface: Interface.AP });
+    const airfrog = await Airfrog.connect(host);
+    await airfrog.setWifiAp('bench-ap', 'apsecret1');
+    check(fake.received.at(-1).payload.readUInt16LE(0) === schema.Command.SET_WIFI_AP
+        && fake.wifiAp?.ssid === 'bench-ap' && fake.wifiAp.password === 'apsecret1', 'setWifiAp(): SET_WIFI_AP');
+    const ap = await airfrog.getWifiAp();
+    check(fake.received.at(-1).payload.readUInt16LE(0) === schema.Command.GET_WIFI_AP && ap.state === schema.AP_ON
+        && ap.stations === 1 && ap.ssid === 'bench-ap' && Array.from(ap.ipv4).join('.') === '192.168.4.1',
+    'getWifiAp(): GET_WIFI_AP decoded');
+    airfrog.close();
+}
+
 // ERROR codes this client names, and one it doesn't
-for (const [code, name, message] of [
-    [16, 'IMAGE_INVALID', 'Invalid firmware file.'],
-    [17, 'RESTARTING', 'Airfrog restarting.'],
-    [8, 'CODE', 'Internal error.'],
-]) {
+for (const [code, name] of [[16, 'IMAGE_INVALID'], [20, 'NOT_PERMITTED'], [21, 'SIGNATURE_INVALID'], [17, 'RESTARTING'],
+    [8, 'CODE']]) {
     const { host } = serve({ airfrogCmdError: code });
     const airfrog = await Airfrog.connect(host);
     const e = await rejects(airfrog.airfrogCmd(0x10, new Uint8Array(0), 1000));
-    check(e?.code === name && e.message === message && !airfrog.isClosed(), `ERROR ${code} is ${name} (${e?.message})`);
+    check(e?.code === name && e.message === ERRORS[name](code) && !airfrog.isClosed(), `ERROR ${code} is ${name} (${e?.message})`);
     airfrog.close();
 }
 
 // Extension errors and their texts
-for (const [code, name, message] of [
-    [10, 'INSTALL_IN_PROGRESS', 'Extension install already in progress.'],
-    [11, 'EXTENSION_INVALID', 'Invalid extension.'],
-    [12, 'EXTENSION_UNSUPPORTED', 'Extension not supported by this Airfrog.'],
-    [13, 'NO_SPACE', 'No room for the extension. Remove an extension, then try again.'],
-]) {
+for (const [code, name] of [[10, 'INSTALL_IN_PROGRESS'], [11, 'EXTENSION_INVALID'], [12, 'EXTENSION_UNSUPPORTED'],
+    [13, 'NO_SPACE']]) {
     const { host } = serve({ airfrogCmdError: code });
     const airfrog = await Airfrog.connect(host);
     const e = await rejects(airfrog.installExtension(new Uint8Array(8), 0));
-    check(e?.code === name && e.message === message && !airfrog.isClosed(), `ERROR ${code} is ${name} (${e?.message})`);
+    check(e?.code === name && e.message === ERRORS[name]() && !airfrog.isClosed(), `ERROR ${code} is ${name} (${e?.message})`);
     airfrog.close();
 }
-check(new AirfrogError('NOT_OFFERED').message === 'Target state changed. Try again.'
-    && new AirfrogError('NOT_RUNNING').message === 'Extension not running.', 'NOT_OFFERED and NOT_RUNNING without a name');
+check(new AirfrogError('NOT_OFFERED').message === ERRORS.NOT_OFFERED(null)
+    && new AirfrogError('NOT_RUNNING').message === ERRORS.NOT_RUNNING(null), 'NOT_OFFERED and NOT_RUNNING without a name');
 
 // Responses are matched by RESPONSE
 {
@@ -338,7 +433,8 @@ check(new AirfrogError('NOT_OFFERED').message === 'Target state changed. Try aga
 
     fake.received = [];
     const image = Uint8Array.from({ length: 9000 }, (_, i) => i & 0xff);
-    await live.installExtension(image, ExtensionFlag.TAB | ExtensionFlag.SIDE_LOADED);
+    const signature = Uint8Array.from({ length: schema.SIGNATURE_LEN }, (_, i) => i + 1);
+    await live.installExtension(image, SetExtensionFlag.TAB, signature);
     const install = fake.received.map(m => m.payload.readUInt16LE(0));
     check(install.join() === [schema.Command.EXT_BEGIN, schema.Command.EXT_WRITE, schema.Command.EXT_WRITE, schema.Command.EXT_WRITE,
         schema.Command.EXT_FINISH].join(), 'install: EXT_BEGIN, EXT_WRITE per max_transfer, EXT_FINISH');
@@ -346,8 +442,9 @@ check(new AirfrogError('NOT_OFFERED').message === 'Target state changed. Try aga
     check(begin.length === schema.EXT_BEGIN_LEN && begin.readUInt32LE(schema.EXT_BEGIN_SIZE_OFFSET) === 9000
         && begin.subarray(schema.EXT_BEGIN_SHA256_OFFSET, schema.EXT_BEGIN_SHA256_OFFSET + 32)
             .equals(crypto.createHash('sha256').update(image).digest())
-        && begin.readUInt16LE(schema.EXT_BEGIN_FLAGS_OFFSET) === 3 && begin.readUInt16LE(38) === 0,
-        'EXT_BEGIN: size, SHA-256, flags');
+        && begin.readUInt16LE(schema.EXT_BEGIN_FLAGS_OFFSET) === SetExtensionFlag.TAB && begin.readUInt16LE(38) === 0
+        && begin.subarray(schema.EXT_BEGIN_SIGNATURE_OFFSET).equals(Buffer.from(signature)),
+        'EXT_BEGIN: size, SHA-256, flags, signature');
     const writes = fake.received.slice(1, 4).map(m => m.payload.subarray(2));
     check(writes.map(w => w.readUInt32LE(schema.OTA_WRITE_OFFSET_OFFSET)).join() === '0,4096,8192'
         && Buffer.concat(writes.map(w => w.subarray(schema.OTA_WRITE_HEAD))).equals(Buffer.from(image)),
@@ -357,6 +454,9 @@ check(new AirfrogError('NOT_OFFERED').message === 'Target state changed. Try aga
     const installing = live.installExtension(image, 0);
     const other = live.airfrogCmd(schema.Command.GET_HW_INFO, new Uint8Array(0), 1000);
     await Promise.all([installing, other]);
+    check(fake.received[0].payload.subarray(2 + schema.EXT_BEGIN_SIGNATURE_OFFSET).every(b => b === 0)
+        && fake.received[0].payload.length === 2 + schema.EXT_BEGIN_LEN,
+        'EXT_BEGIN without a signature: 74 zero bytes');
     check(fake.received.map(m => m.payload.readUInt16LE(0)).join() === [schema.Command.EXT_BEGIN, schema.Command.EXT_WRITE,
         schema.Command.EXT_WRITE, schema.Command.EXT_WRITE, schema.Command.EXT_FINISH, schema.Command.GET_HW_INFO].join(),
     'a request made during an install is sent after EXT_FINISH');
@@ -443,9 +543,10 @@ class FakeBridge {
             this.session = fake.connect(false,
                 (message) => this.post(message),
                 (code) => this.post({ close: { code: 'CLOSED', detail: code, message: `closed ${code}` } }));
-            const hello = Buffer.alloc(44);
+            const hello = Buffer.alloc(50);
             hello.writeUInt16LE(1, 0);
             hello.writeUInt32LE(4096, 4);
+            hello.writeUInt16LE(0, 44);
             this.post({ type: 1, flags: 0, payload: new Uint8Array(hello) });
             this.post({ type: 3, flags: 0,
                 payload: new Uint8Array((fake.target === TARGETS.bootRom ? bootRomPayload : null)) });
@@ -563,6 +664,14 @@ function bridgeSite(fake, options = {}) {
     const e = await rejects(pending);
     check(e?.code === 'CLOSED' && e.message === 'The airfrog.test window was closed.',
         'closing Airfrog\'s window before login rejects');
+}
+{
+    const site = bridgeSite(new FakeAirfrog(), { loginMs: 100000 });
+    const pending = Airfrog.connectBridge('airfrog.test');
+    site.bridge.post({ close: { code: 'ACCESS_POINT', detail: null } });
+    const e = await rejects(pending);
+    check(e?.code === 'ACCESS_POINT' && e.message === BRIDGE.ON_AP('onerom.org', 'airfrog.test'),
+        `a bridge window over the access point rejects with ACCESS_POINT (${e?.message})`);
 }
 {
     bridgeSite(new FakeAirfrog(), { blocked: true });

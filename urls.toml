@@ -36,10 +36,10 @@ host = "AIRFROG_TLD"
 path = "recovery"
 comment = "The recovery page"
 
-[MANIFEST_KEY_JS]
+[RELEASE_KEYS_JS]
 host = "AIRFROG_TLD"
-path = "commissioning/manifest-key.js"
-comment = "airfrog-site's copy of the manifest key's public half, which verifies the manifests"
+path = "commissioning/release-keys.js"
+comment = "The release keys and the Airfrog manifest's address"
 
 [FIRMWARE_MANIFEST]
 host = "AIRFROG_IMAGES"
@@ -54,12 +54,12 @@ comment = "A release of a model's firmware"
 [FIRMWARE_UPDATE_IMAGE]
 host = "AIRFROG_IMAGES"
 path = "firmware/airfrog-{model}/v{release}/airfrog-{model}.bin"
-comment = "The firmware alone, installed over WiFi"
+comment = "Firmware image, for updating an Airfrog"
 
 [FIRMWARE_FACTORY_IMAGE]
 host = "AIRFROG_IMAGES"
 path = "firmware/airfrog-{model}/v{release}/airfrog-{model}.factory.bin"
-comment = "The whole flash of a blank Airfrog in one file, for esptool and browser flashers"
+comment = "Full flash image, for commissioning a new Airfrog"
 
 [FIRMWARE_FACTORY_FILES]
 host = "AIRFROG_IMAGES"

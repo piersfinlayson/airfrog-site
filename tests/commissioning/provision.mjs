@@ -21,7 +21,8 @@ import { SerialClient } from '../../js/setup/serial.js';
 import {
   Command, StaState, encodeSettings, parseHostAliases, parseHostname, parseSettings, parseWifiSta,
 } from '../../js/setup/protocol.js';
-import { checkAliases, checkHostname, checkWifi } from '../../js/setup/validate.js';
+import { checkAliases, checkHostname, checkWifi, followsRule } from '../../js/setup/validate.js';
+import { PASSWORD_RULE } from '../../js/messages.js';
 import { pbkdf2HmacSha256 } from '../../js/sha256.js';
 
 const USAGE = `Usage: provision.mjs HOST PORT [options]
@@ -35,7 +36,7 @@ const USAGE = `Usage: provision.mjs HOST PORT [options]
   --password PW          Airfrog's password
   --hostname NAME        Airfrog's hostname
   --aliases "A B"        Host aliases, separated by spaces
-  --recovery-off         Turn recovery off
+  --recovery             Turn recovery through the target on
   --wifi-power-save      Turn WiFi power save on
   --timeout MS           Wait for each response (default 5000)
   --hello-timeout MS     Wait for HELLO's response (default 20000)
@@ -62,7 +63,7 @@ try {
       password: { type: 'string' },
       hostname: { type: 'string' },
       aliases: { type: 'string' },
-      'recovery-off': { type: 'boolean' },
+      recovery: { type: 'boolean' },
       'wifi-power-save': { type: 'boolean' },
       timeout: { type: 'string' },
       'hello-timeout': { type: 'string' },
@@ -127,8 +128,8 @@ const failed = (message) => {
 function changes({ aliases, sta, settings }) {
   const out = [];
   const errors = [];
-  if (o['recovery-off'] || o['wifi-power-save']) {
-    out.push([Command.SET_SETTINGS, encodeSettings({ ...settings, recovery: o['recovery-off'] ? false : settings.recovery,
+  if (o.recovery || o['wifi-power-save']) {
+    out.push([Command.SET_SETTINGS, encodeSettings({ ...settings, recovery: o.recovery || settings.recovery,
       wifiPowerSave: o['wifi-power-save'] || settings.wifiPowerSave })]);
   }
   if (o.aliases !== undefined && o.aliases !== aliases.join(' ')) {
@@ -142,6 +143,9 @@ function changes({ aliases, sta, settings }) {
     out.push([Command.SET_HOSTNAME, r.fields]);
   }
   if (o.password !== undefined) {
+    if (!followsRule(o.password)) {
+      errors.push({ field: 'password', message: PASSWORD_RULE.NOT_MET });
+    }
     const salt = crypto.getRandomValues(new Uint8Array(16));
     out.push([Command.SET_PASSWORD, concat(pbkdf2HmacSha256(utf8(o.password), salt, hello.iterations), salt)]);
   }

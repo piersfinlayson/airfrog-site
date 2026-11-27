@@ -3,12 +3,16 @@
 // MIT License
 
 // The Airfrog Extensions tab: the installed extensions, Install extensions and
-// Install from file (airfrog-v2/docs/ac4-design.md sections 8 and 9).
+// Install from file. Repository images are signed. A package from a file is
+// unsigned, and an extension image from a file is either. An image signed with
+// a key Airfrog doesn't have is sent unsigned. Airfrog installs an unsigned
+// image only over serial or the access point started with the recovery
+// button, so elsewhere the tab displays why and doesn't send it.
 
 import { button, check, h, link, message, prompt } from '../../../js/setup/dom.js';
 import { download } from '../../../js/setup/download.js';
 import { Command, EMPTY, errorText, parseFwInfo, parseHwInfo } from '../../../js/setup/protocol.js';
-import { ExtensionFlag, SetExtensionFlag, WasmReason, WasmState } from '../../../js/schema.js';
+import { ExtensionFlag, Interface, SetExtensionFlag, WasmReason, WasmState } from '../../../js/schema.js';
 import { ERRORS, EXTENSIONS, FIRMWARE, SETTINGS, VALUES } from '../../../js/messages.js';
 import {
     ExtensionError, checkDownload, checkList, checkMetadata, findVersion, firmwareText, isLocal, latest, targetGroup,
@@ -16,7 +20,8 @@ import {
 } from './list.js';
 import { downloadText } from '../download.js';
 import { compare } from './semver.js';
-import { readPackage } from './package.js';
+import { readExtensionFile } from './package.js';
+import { signatureFor } from '../../../js/signed.js';
 
 /** The number of extensions with a UI whose Tab checkbox is ticked at install. */
 export const DEFAULT_TABS = 3;
@@ -49,7 +54,7 @@ export function stateText(wasmState) {
  * @property {string} displayName
  * @property {string|null} version
  * @property {string|null} ui - the checked extension UI address, null for none
- * @property {boolean} sideLoaded
+ * @property {boolean} unsigned - installed without a signature
  * @property {boolean} tab
  */
 
@@ -90,7 +95,7 @@ export class ExtensionsTab {
         this.none = h('p', { class: 'note', hidden: true }, EXTENSIONS.NONE_INSTALLED);
         this.msg = message();
         this.confirm = prompt();
-        this.file = h('input', { type: 'file', accept: '.afx', hidden: true, onchange: () => this.#chosen() });
+        this.file = h('input', { type: 'file', accept: '.afx,.bin', hidden: true, onchange: () => this.#chosen() });
         this.addButton = button(EXTENSIONS.ADD, () => this.#showAdd(true));
         this.fileButton = button(EXTENSIONS.FROM_FILE, () => this.file.click());
         this.table = h('table', { class: 'exts' },
@@ -189,12 +194,12 @@ export class ExtensionsTab {
                         throw err;
                     }
                 }
-                const sideLoaded = Boolean(e.flags & ExtensionFlag.SIDE_LOADED);
+                const unsigned = Boolean(e.flags & ExtensionFlag.UNSIGNED);
                 items.push({
                     name, flags: e.flags, wasmState: e.wasmState, wasmReason: e.wasmReason, metadata,
                     displayName: metadata?.display_name ?? name, version: metadata?.version ?? null,
                     ui: null,
-                    sideLoaded, tab: Boolean(e.flags & ExtensionFlag.TAB),
+                    unsigned, tab: Boolean(e.flags & ExtensionFlag.TAB),
                 });
             }
             this.installed = items;
@@ -213,7 +218,7 @@ export class ExtensionsTab {
      */
     #changed() {
         const local = isLocal(this.extensionsUrl);
-        this.installed = this.installed.map(x => ({ ...x, ui: uiAddress(x.metadata?.ui, x.sideLoaded || local) }));
+        this.installed = this.installed.map(x => ({ ...x, ui: uiAddress(x.metadata?.ui, x.unsigned || local) }));
         this.onChange(this.installed);
         this.render();
     }
@@ -228,10 +233,10 @@ export class ExtensionsTab {
         this.#renderAvail(disabled);
     }
 
-    /** The installed version's note: latest version, side-loaded or Depublished. */
+    /** The installed version's note, in brackets after it: latest version, unsigned or depublished. */
     #note(x) {
-        if (x.sideLoaded) {
-            return EXTENSIONS.SIDE_LOADED;
+        if (x.unsigned) {
+            return EXTENSIONS.UNSIGNED;
         }
         const entry = this.list?.get(x.name);
         if (!entry) {
@@ -249,7 +254,7 @@ export class ExtensionsTab {
     #newer(x) {
         const entry = this.list?.get(x.name);
         const info = this.#info();
-        if (x.sideLoaded || !entry || entry.depublished || !info || !x.version) {
+        if (x.unsigned || !entry || entry.depublished || !info || !x.version) {
             return null;
         }
         const newest = latest(entry, info.model, info.wamr);
@@ -259,7 +264,7 @@ export class ExtensionsTab {
     /** An installed extension's buttons in the installed list and in Install extensions. */
     #actions(x, disabled, msg, confirm) {
         const newer = this.#newer(x);
-        const reinstall = !x.sideLoaded && x.wasmReason === WasmReason.OTHER_WAMR_VERSION
+        const reinstall = !x.unsigned && x.wasmReason === WasmReason.OTHER_WAMR_VERSION
             && (x.wasmState === WasmState.STOPPED || x.wasmState === WasmState.NOT_STARTED);
         return [
             x.ui ? button(EXTENSIONS.OPEN, () => this.openUi(x.name), { class: 'small', disabled: !this.connected })
@@ -294,8 +299,8 @@ export class ExtensionsTab {
         const tr = h('tr', { draggable: !disabled, class: 'ext-row', 'data-name': x.name },
             h('td', { class: 'handle', 'aria-hidden': 'true' }, '⠿'),
             h('td', {}, x.displayName),
-            h('td', { class: 'ver' }, x.version ? VALUES.VERSION(x.version) : VALUES.NONE,
-                note ? [' ', h('span', { class: 'muted' }, note)] : null),
+            h('td', { class: 'ver' }, note ? VALUES.WITH_NOTE(x.version ? VALUES.VERSION(x.version) : VALUES.NONE, note)
+                : x.version ? VALUES.VERSION(x.version) : VALUES.NONE),
             h('td', {}, stateText(x.wasmState)),
             h('td', {}, tab),
             h('td', { class: 'acts' }, ...this.#actions(x, disabled, this.msg, this.confirm)));
@@ -419,9 +424,9 @@ export class ExtensionsTab {
                     throw new ExtensionError(ERRORS.EXTENSION_UNSUPPORTED());
                 }
                 msg.say(this.#progress(existing, chosen.metadata));
-                const bytes = await downloadImage(chosen.image.url);
-                checkDownload(bytes, name, chosen.image);
-                await this.#install(airfrog, bytes, chosen.metadata, false, msg);
+                const file = checkDownload(await downloadImage(chosen.image.url), name, chosen.image);
+                await this.#install(airfrog, file.image, signatureFor(file.signature, airfrog.getReleaseKeys()),
+                    chosen.metadata, msg);
             } catch (e) {
                 msg.say(`${failed} ${errorText(e)}`, 'bad');
             }
@@ -434,13 +439,21 @@ export class ExtensionsTab {
             : EXTENSIONS.INSTALLING(metadata.display_name, version);
     }
 
-    async #install(airfrog, image, metadata, sideLoaded, msg) {
+    /** Whether an image with signature, null for unsigned, can be installed over airfrog's connection. */
+    static #allowed(airfrog, signature) {
+        return Boolean(signature) || airfrog.getInterface() === Interface.AP_BUTTON;
+    }
+
+    async #install(airfrog, image, signature, metadata, msg) {
+        if (!ExtensionsTab.#allowed(airfrog, signature)) {
+            throw new ExtensionError(EXTENSIONS.UNSIGNED_NOT_HERE);
+        }
         const existing = this.installed.find(x => x.name === metadata.name);
-        const local = sideLoaded || isLocal(this.extensionsUrl);
+        const local = !signature || isLocal(this.extensionsUrl);
         const withUi = this.installed.filter(x => x.ui).length;
         const tab = !existing && uiAddress(metadata.ui, local) && withUi < DEFAULT_TABS;
         msg.say(this.#progress(existing, metadata));
-        await airfrog.installExtension(image, (tab ? ExtensionFlag.TAB : 0) | (sideLoaded ? ExtensionFlag.SIDE_LOADED : 0));
+        await airfrog.installExtension(image, tab ? SetExtensionFlag.TAB : 0, signature);
         await this.refresh();
         const version = VALUES.VERSION(metadata.version);
         msg.say(existing ? EXTENSIONS.UPDATED(metadata.display_name, version)
@@ -464,31 +477,44 @@ export class ExtensionsTab {
         });
     }
 
-    /** A package was chosen with Install from file: confirm, then install it. */
+    /**
+     * A file was chosen with Install from file: a package or an extension
+     * image. An unsigned one is confirmed first.
+     */
     async #chosen() {
         const file = this.file.files?.[0];
         this.file.value = '';
         if (!file || this.busy) {
             return;
         }
-        let pkg;
+        let chosen;
         try {
-            const info = await this.#readInfo(this.airfrog());
-            pkg = await readPackage(new Uint8Array(await file.arrayBuffer()), info.model, info.wamr);
+            const airfrog = this.airfrog();
+            const info = await this.#readInfo(airfrog);
+            chosen = await readExtensionFile(new Uint8Array(await file.arrayBuffer()), info.model, info.wamr);
+            chosen.signature = signatureFor(chosen.signature, airfrog.getReleaseKeys());
+            if (!ExtensionsTab.#allowed(airfrog, chosen.signature)) {
+                throw new ExtensionError(EXTENSIONS.UNSIGNED_NOT_HERE);
+            }
         } catch (e) {
             this.msg.say(`${EXTENSIONS.INSTALL_FAILED} ${errorText(e)}`, 'bad');
             return;
         }
         this.msg.say('');
-        this.confirm.ask(EXTENSIONS.SIDE_LOAD_CONFIRM, EXTENSIONS.INSTALL, () => this.#run(async () => {
-            const existing = this.installed.some(x => x.name === pkg.metadata.name);
+        const install = () => this.#run(async () => {
+            const existing = this.installed.some(x => x.name === chosen.metadata.name);
             try {
-                await this.#install(this.airfrog(), pkg.image, pkg.metadata, true, this.msg);
+                await this.#install(this.airfrog(), chosen.image, chosen.signature, chosen.metadata, this.msg);
             } catch (e) {
                 const failed = existing ? EXTENSIONS.UPDATE_FAILED : EXTENSIONS.INSTALL_FAILED;
                 this.msg.say(`${failed} ${errorText(e)}`, 'bad');
             }
-        }));
+        });
+        if (chosen.signature) {
+            install();
+        } else {
+            this.confirm.ask(EXTENSIONS.UNSIGNED_CONFIRM, EXTENSIONS.INSTALL, install);
+        }
     }
 }
 

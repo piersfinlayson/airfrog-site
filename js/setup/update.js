@@ -3,14 +3,16 @@
 // MIT License
 
 // Airfrog's firmware update: OTA_BEGIN, OTA_WRITE, OTA_FINISH, then
-// OTA_CONFIRM once Airfrog has restarted into the new firmware.
+// OTA_CONFIRM once Airfrog has restarted into the new firmware: when
+// GET_FW_INFO's SHA-256 of the running image is the SHA-256 OTA_BEGIN sent.
 
 import { sha256 } from '../sha256.js';
+import { readSignedFile } from '../signed.js';
 import { hex, view } from './bytes.js';
 import { download } from './download.js';
 import { Command, EMPTY, encodeOtaBegin, encodeOtaWrite, parseFwInfo } from './protocol.js';
 import { MODELS, versionText } from './format.js';
-import { airfrogReleases, checkFirmwareManifest, latestRelease } from './releases.js';
+import { checkFirmwareManifest, latestRelease } from './releases.js';
 import { UPDATE } from '../messages.js';
 import { CLOSE_GOING_AWAY, IMAGE_MODEL_OFFSET, PROJECT } from '../schema.js';
 
@@ -67,20 +69,25 @@ export function checkFirmwareFile(data, model) {
     return { version, error: null };
 }
 
-/**
- * Whether data is an Airfrog firmware release's image in the firmware
- * manifest, which is signed.
- * @param {object} firmware - the verified firmware manifest
- * @param {Uint8Array} data
- */
-export function inFirmwareManifest(firmware, data) {
-    const sum = hex(sha256(data));
-    return airfrogReleases(firmware).some(r => r.image?.sha256 === sum && r.image?.size === data.length);
-}
-
 /** A version without a leading v, as GET_FW_INFO reports it. */
 function plainVersion(version) {
     return version.replace(/^v/, '');
+}
+
+const VERSION = /^\d+\.\d+\.\d+$/;
+
+/**
+ * Whether firmware version is older than the running firmware's, by
+ * Airfrog's comparison: a version that isn't MAJOR.MINOR.PATCH is older, and a
+ * running version that isn't is the oldest.
+ * @param {string|null} version - the image's
+ * @param {string} running - GET_FW_INFO's
+ */
+export function isOlder(version, running) {
+    if (!VERSION.test(version ?? '')) {
+        return true;
+    }
+    return VERSION.test(running) && compareVersions(version, running) < 0;
 }
 
 /** Compares versions MAJOR.MINOR.PATCH, with or without a leading v. */
@@ -133,10 +140,11 @@ class UpdateError extends Error {
 }
 
 /**
- * Downloads a release's firmware and checks its size and SHA-256.
+ * Downloads a release's firmware, a signed file, and checks its size and
+ * SHA-256.
  * @param {{version: string, url: string, size: number, sha256: string}} offer
  * @param {object} [options] - download()'s
- * @returns {Promise<Uint8Array>}
+ * @returns {Promise<{image: Uint8Array, signature: Uint8Array|null}>}
  */
 export async function downloadFirmware(offer, options = {}) {
     const failed = (reason) =>
@@ -150,10 +158,12 @@ export async function downloadFirmware(offer, options = {}) {
         }
         throw failed(e.status === null ? e.message : UPDATE.HTTP_STATUS(e.status));
     }
-    if (data.length !== offer.size || hex(sha256(data)) !== offer.sha256) {
+    const file = data.length === offer.size && hex(sha256(data)) === offer.sha256
+        ? readSignedFile(data, 'firmware') : null;
+    if (!file) {
         throw failed(UPDATE.CORRUPT);
     }
-    return data;
+    return file;
 }
 
 /**
@@ -161,6 +171,8 @@ export async function downloadFirmware(offer, options = {}) {
  * @param {object} options
  * @param {import('./session.js').Session} options.session
  * @param {Uint8Array} options.image
+ * @param {Uint8Array|null} options.signature - the image's signature, null
+ *        for an unsigned image
  * @param {string} options.version - the image's version
  * @param {string} [options.commit] - the image's commit, when known
  * @param {{version: string, commit: string}} options.previous - the
@@ -168,11 +180,12 @@ export async function downloadFirmware(offer, options = {}) {
  * @param {function(string)} [options.onPhase] - what the update is doing
  * @param {function(number)} [options.onProgress] - 0 to 1 while writing
  * @param {number} [options.restartMs] - the wait for Airfrog to reconnect
- * @returns {Promise<{running: string, commit: string, wanted: string, wantedCommit: string}>}
- *          the version and commit Airfrog runs after the update, and the
- *          version and commit written
+ * @returns {Promise<{running: string, commit: string, wanted: string, wantedCommit: string, booted: boolean}>}
+ *          the version and commit Airfrog runs after the update, the
+ *          version and commit written, and whether Airfrog runs the image
+ *          written. OTA_CONFIRM is sent only when it does
  */
-export async function runUpdate({ session, image, version, commit = '', previous, onPhase = () => {},
+export async function runUpdate({ session, image, signature, version, commit = '', previous, onPhase = () => {},
     onProgress = () => {}, restartMs = RESTART_MS }) {
     const airfrog = session.airfrog;
     if (!airfrog) {
@@ -180,9 +193,10 @@ export async function runUpdate({ session, image, version, commit = '', previous
     }
     const max = airfrog.getMaxTransfer();
     const named = versionText(version, commit);
+    const sum = sha256(image);
     onProgress(0);
     onPhase(UPDATE.UPDATING(named));
-    await airfrog.airfrogCmd(Command.OTA_BEGIN, encodeOtaBegin(image.length, sha256(image)), CMD_MS);
+    await airfrog.airfrogCmd(Command.OTA_BEGIN, encodeOtaBegin(image.length, sum, signature), CMD_MS);
     for (let offset = 0; offset < image.length; offset += max) {
         await airfrog.airfrogCmd(Command.OTA_WRITE, encodeOtaWrite(offset, image.subarray(offset, offset + max)), CMD_MS);
         onProgress(Math.min(1, (offset + max) / image.length));
@@ -190,31 +204,45 @@ export async function runUpdate({ session, image, version, commit = '', previous
 
     onPhase(UPDATE.VERIFYING);
     const next = session.nextConnection(restartMs);
-    session.expectClose({ message: UPDATE.RESTARTING(named) });
+    // The reconnect isn't checked against the Airfrog UI's manifest address
+    // and release keys, so firmware with others is confirmed rather than
+    // reverted. It is closed once it has confirmed.
+    session.expectClose({ message: UPDATE.RESTARTING(named), confirm: true });
     try {
         await airfrog.airfrogCmd(Command.OTA_FINISH, EMPTY, FINISH_MS);
     } catch (e) {
-        // Airfrog closes the connection as it restarts.
+        // Airfrog closes the connection as it restarts. Another failure
+        // isn't followed by a reconnect to confirm, so the next connection
+        // is checked.
         if (!(e.code === 'CLOSED' && e.detail === CLOSE_GOING_AWAY)) {
             session.cancelExpected();
+            session.endConfirming();
             throw e;
         }
     }
 
-    // The connection's status displays the restart.
-    onPhase('');
-    const after = await next;
-    if (!after) {
-        throw new UpdateError(UPDATE.NO_RESPONSE(versionText(previous.version, previous.commit)));
+    try {
+        // The connection's status displays the restart.
+        onPhase('');
+        const after = await next;
+        if (!after) {
+            throw new UpdateError(UPDATE.NO_RESPONSE(versionText(previous.version, previous.commit)));
+        }
+        const fw = parseFwInfo(await after.airfrogCmd(Command.GET_FW_INFO, EMPTY, CMD_MS));
+        // Otherwise the new image didn't boot and the previous one runs.
+        const booted = fw.sha256 === hex(sum);
+        if (booted) {
+            await after.airfrogCmd(Command.OTA_CONFIRM, EMPTY, CMD_MS);
+        }
+        return { running: fw.version, commit: fw.commit, wanted: plainVersion(version), wantedCommit: commit, booted };
+    } finally {
+        session.endConfirming();
     }
-    const fw = parseFwInfo(await after.airfrogCmd(Command.GET_FW_INFO, EMPTY, CMD_MS));
-    await after.airfrogCmd(Command.OTA_CONFIRM, EMPTY, CMD_MS);
-    return { running: fw.version, commit: fw.commit, wanted: plainVersion(version), wantedCommit: commit };
 }
 
 /** @returns {{text: string, ok: boolean}} the update's result for display */
-export function describeResult({ running, commit = '', wanted, wantedCommit = '' }) {
-    if (running === wanted) {
+export function describeResult({ running, commit = '', wanted, wantedCommit = '', booted }) {
+    if (booted) {
         return { text: UPDATE.UPDATED(versionText(running, commit)), ok: true };
     }
     return { text: UPDATE.REVERTED(versionText(wanted, wantedCommit), versionText(running, commit)), ok: false };

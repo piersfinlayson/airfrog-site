@@ -26,6 +26,10 @@ export const LOGIN_LABEL = 'login';
 export const PROOF_LABEL = 'airfrog';
 /** The label of S, the connection's key. */
 export const SESSION_LABEL = 'session';
+/** The label of the pad that encrypts SET_PASSWORD's key on a logged-in connection. */
+export const PASSWORD_LABEL = 'password';
+/** A signature: Ed, the key ID and the Ed25519 signature. */
+export const SIGNATURE_LEN = 74;
 /** The hmac's direction byte on a message from the client. */
 export const DIRECTION_CLIENT = 0x00;
 /** The hmac's direction byte on a message from Airfrog. */
@@ -76,16 +80,29 @@ export const CLAIM_MS = 10000;
 export const MAX_TRANSFER_MIN = 4096;
 /** The start of an extension image. */
 export const EXT_IMAGE_MAGIC = 'AFXI';
+/** The start of the signature block after a signed file's image. */
+export const SIGNATURE_MAGIC = 'AFSG';
 /** Installed extensions. */
 export const EXTENSIONS_MAX = 16;
 /** An extension name. */
 export const EXT_NAME_MAX = 32;
 /** An extension's metadata. */
 export const EXT_METADATA_MAX = 2048;
-/** An extension install ends this long after its last EXT_BEGIN or EXT_WRITE. */
-export const EXT_INSTALL_MS = 10000;
+/**
+ * An extension install, or a firmware update past the button AP's 5 minutes,
+ * ends this long after its last BEGIN or WRITE.
+ */
+export const INSTALL_MS = 10000;
+/** How long the recovery button is held, while Airfrog runs, to start the access point. */
+export const BUTTON_HOLD_S = 3;
+/** How long the access point started with the recovery button lasts, in minutes. */
+export const BUTTON_AP_MIN = 5;
 /** A download that receives nothing for this long fails. */
 export const DOWNLOAD_TIMEOUT_MS = 15000;
+/** Clients don't log in when HELLO's iterations is lower. */
+export const MIN_ITERATIONS = 100000;
+/** The shortest Airfrog password a client sets. */
+export const PASSWORD_MIN = 8;
 
 // Message types.
 export const HELLO = 0x01;
@@ -156,6 +173,8 @@ export const ERROR_IMAGE_INVALID = 16;
 export const ERROR_RESTARTING = 17;
 export const ERROR_EXISTS = 18;
 export const ERROR_NO_ENTRY = 19;
+export const ERROR_NOT_PERMITTED = 20;
+export const ERROR_SIGNATURE_INVALID = 21;
 
 // Close codes.
 /** WebSocket's going away, when Airfrog restarts or a client is silent. */
@@ -245,6 +264,20 @@ export const Command = Object.freeze({
     REMOVE_AUTHORISED_WEBSITE: 0x21,
     ADD_HOST_ALIAS: 0x22,
     REMOVE_HOST_ALIAS: 0x23,
+    SET_WIFI_AP: 0x24,
+});
+
+/** HELLO's interface: how the client is connected to Airfrog. */
+export const Interface = Object.freeze({
+    /** WiFi station, the home network. */
+    STATION: 0,
+    SERIAL: 1,
+    /** Access point. */
+    AP: 2,
+    /** Access point, during first setup. */
+    AP_FIRST_SETUP: 3,
+    /** Access point, started with the recovery button. */
+    AP_BUTTON: 4,
 });
 
 /** Firmware IDs in TARGET and IDENTIFY. */
@@ -343,15 +376,15 @@ export const RestartMode = Object.freeze({
     IMMEDIATE: 1,
 });
 
-/** GET_EXTENSIONS's and EXT_BEGIN's flags. */
+/** GET_EXTENSIONS's flags. */
 export const ExtensionFlag = Object.freeze({
     /** The extension's Tab checkbox is ticked. */
     TAB: 0x0001,
-    /** Installed from a file, not the repository. */
-    SIDE_LOADED: 0x0002,
+    /** Installed without a signature. */
+    UNSIGNED: 0x0002,
 });
 
-/** SET_EXTENSIONS's flags. Other bits fail with OUT_OF_RANGE. */
+/** SET_EXTENSIONS's and EXT_BEGIN's flags. Other bits fail with OUT_OF_RANGE. */
 export const SetExtensionFlag = Object.freeze({
     /** The extension's Tab checkbox is ticked. */
     TAB: 0x0001,
@@ -464,7 +497,13 @@ export const HELLO_MAX_TRANSFER_OFFSET = 4;
 export const HELLO_NS_OFFSET = 8;
 export const HELLO_SALT_OFFSET = 24;
 export const HELLO_ITERATIONS_OFFSET = 40;
-export const HELLO_LEN = 44;
+export const HELLO_INTERFACE_OFFSET = 44;
+export const HELLO_KEY_COUNT_OFFSET = 46;
+export const HELLO_HEAD = 48;
+
+// A release key in HELLO, an Ed25519 public key.
+export const RELEASE_KEY_KEY_OFFSET = 0;
+export const RELEASE_KEY_LEN = 32;
 
 // LOGIN's fields.
 export const LOGIN_NC_OFFSET = 0;
@@ -523,7 +562,8 @@ export const HW_INFO_LEN = 36;
 export const FW_INFO_VERSION_OFFSET = 0;
 export const FW_INFO_BOOTLOADER_OFFSET = 4;
 export const FW_INFO_WAMR_OFFSET = 8;
-export const FW_INFO_HEAD = 12;
+export const FW_INFO_SHA256_OFFSET = 12;
+export const FW_INFO_HEAD = 44;
 
 // GET_WIFI_STA's response.
 export const WIFI_STA_STATE_OFFSET = 0;
@@ -607,7 +647,8 @@ export const SETTINGS_WIFI_RESCAN_S_MAX = 0xFFFFFFFF;
 // OTA_BEGIN's fields.
 export const OTA_BEGIN_SIZE_OFFSET = 0;
 export const OTA_BEGIN_SHA256_OFFSET = 4;
-export const OTA_BEGIN_LEN = 36;
+export const OTA_BEGIN_SIGNATURE_OFFSET = 36;
+export const OTA_BEGIN_LEN = 110;
 
 // OTA_WRITE's fields.
 export const OTA_WRITE_OFFSET_OFFSET = 0;
@@ -659,7 +700,8 @@ export const EXTENSION_ENTRY_HEAD = 6;
 export const EXT_BEGIN_SIZE_OFFSET = 0;
 export const EXT_BEGIN_SHA256_OFFSET = 4;
 export const EXT_BEGIN_FLAGS_OFFSET = 36;
-export const EXT_BEGIN_LEN = 40;
+export const EXT_BEGIN_SIGNATURE_OFFSET = 40;
+export const EXT_BEGIN_LEN = 114;
 
 // SET_EXTENSIONS's fields.
 export const SET_EXTENSIONS_COUNT_OFFSET = 0;
@@ -936,6 +978,10 @@ function readHello(r) {
     f.ns = r.bytesOf(16);
     f.salt = r.bytesOf(16);
     f.iterations = r.u32();
+    f.interface = r.u16();
+    f.keyCount = r.u16();
+    f.keys = r.list(f.keyCount, () => readReleaseKey(r));
+    f.manifestUrl = r.text();
     return f;
 }
 
@@ -946,6 +992,12 @@ function writeHello(w, f) {
     w.bytesOf(f.ns, 16);
     w.bytesOf(f.salt, 16);
     w.u32(f.iterations);
+    w.u16(f.interface);
+    w.u16(f.keyCount ?? (f.keys ?? []).length);
+    for (const e of f.keys ?? []) {
+        writeReleaseKey(w, e);
+    }
+    w.text(f.manifestUrl);
 }
 
 /**
@@ -968,6 +1020,39 @@ export function decodeHello(p) {
 export function encodeHello(f) {
     const w = new FieldWriter();
     writeHello(w, f);
+    return w.bytes();
+}
+
+function readReleaseKey(r) {
+    const f = {};
+    f.key = r.bytesOf(32);
+    return f;
+}
+
+function writeReleaseKey(w, f) {
+    w.bytesOf(f.key, 32);
+}
+
+/**
+ * Decodes a release key in HELLO, an Ed25519 public key.
+ * @param {Uint8Array} p
+ * @returns {object|null} the fields, null when p is too short for them.
+ *          Bytes after them are ignored
+ */
+export function decodeReleaseKey(p) {
+    const r = new FieldReader(p);
+    const f = readReleaseKey(r);
+    return r.short ? null : f;
+}
+
+/**
+ * Encodes a release key in HELLO, an Ed25519 public key.
+ * @param {object} f - the fields. A missing field is 0 or empty
+ * @returns {Uint8Array}
+ */
+export function encodeReleaseKey(f) {
+    const w = new FieldWriter();
+    writeReleaseKey(w, f);
     return w.bytes();
 }
 
@@ -1354,6 +1439,7 @@ function readFwInfo(r) {
     r.bytesOf(2);
     f.wamr = r.bytesOf(3);
     r.bytesOf(1);
+    f.sha256 = r.bytesOf(32);
     f.commit = r.left() >= 2 ? r.text() : null;
     return f;
 }
@@ -1365,6 +1451,7 @@ function writeFwInfo(w, f) {
     w.bytesOf(null, 2);
     w.bytesOf(f.wamr, 3);
     w.bytesOf(null, 1);
+    w.bytesOf(f.sha256, 32);
     w.text(f.commit);
 }
 
@@ -1484,6 +1571,41 @@ export function decodeWifiAp(p) {
 export function encodeWifiAp(f) {
     const w = new FieldWriter();
     writeWifiAp(w, f);
+    return w.bytes();
+}
+
+function readSetWifiAp(r) {
+    const f = {};
+    f.ssid = r.text();
+    f.password = r.text();
+    return f;
+}
+
+function writeSetWifiAp(w, f) {
+    w.text(f.ssid);
+    w.text(f.password);
+}
+
+/**
+ * Decodes SET_WIFI_AP's fields.
+ * @param {Uint8Array} p
+ * @returns {object|null} the fields, null when p is too short for them.
+ *          Bytes after them are ignored
+ */
+export function decodeSetWifiAp(p) {
+    const r = new FieldReader(p);
+    const f = readSetWifiAp(r);
+    return r.short ? null : f;
+}
+
+/**
+ * Encodes SET_WIFI_AP's fields.
+ * @param {object} f - the fields. A missing field is 0 or empty
+ * @returns {Uint8Array}
+ */
+export function encodeSetWifiAp(f) {
+    const w = new FieldWriter();
+    writeSetWifiAp(w, f);
     return w.bytes();
 }
 
@@ -1955,12 +2077,14 @@ function readOtaBegin(r) {
     const f = {};
     f.size = r.u32();
     f.sha256 = r.bytesOf(32);
+    f.signature = r.bytesOf(74);
     return f;
 }
 
 function writeOtaBegin(w, f) {
     w.u32(f.size);
     w.bytesOf(f.sha256, 32);
+    w.bytesOf(f.signature, 74);
 }
 
 /**
@@ -2304,6 +2428,7 @@ function readExtBegin(r) {
     f.sha256 = r.bytesOf(32);
     f.flags = r.u16();
     r.bytesOf(2);
+    f.signature = r.bytesOf(74);
     return f;
 }
 
@@ -2312,6 +2437,7 @@ function writeExtBegin(w, f) {
     w.bytesOf(f.sha256, 32);
     w.u16(f.flags);
     w.bytesOf(null, 2);
+    w.bytesOf(f.signature, 74);
 }
 
 /**

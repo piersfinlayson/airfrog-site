@@ -24,6 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Cdp } from './harness.mjs';
+import { COMMISSIONING_FIRMWARE } from '../../../js/messages.js';
 import { TEST_KEY, minisig } from '../../ui/minisign.mjs';
 import { ESPTOOL, boardOf, fakeSerial } from './fake-serial.mjs';
 
@@ -47,7 +48,7 @@ const sha = (data) => createHash('sha256').update(data).digest('hex');
 
 // The server.
 let origin = '';
-const setup = Buffer.from('export const API = 2;\n');
+const setup = Buffer.from('export const API = 3;\n');
 
 /** A release of the fixture release's files, as the firmware manifest lists it. */
 function release(version) {
@@ -72,8 +73,9 @@ function served() {
       'airfrog-mini-v2': [release('0.4.0'), release('0.3.0')],
     },
   };
-  const airfrog = { type: 'airfrog', version: 1, ui_manifest: `${origin}/ui.json`,
-    firmware_manifest: `${origin}/firmware.json`, js_library: `${origin}/js/` };
+  const airfrog = { type: 'airfrog', version: 1, ui_manifest: { url: `${origin}/ui.json`, key: TEST_KEY },
+    firmware_manifest: { url: `${origin}/firmware.json`, key: TEST_KEY }, js_library: `${origin}/js/`,
+    full_access_websites: [] };
   const bodies = {};
   for (const [name, manifest] of [['airfrog', airfrog], ['firmware', firmware]]) {
     const body = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
@@ -97,8 +99,8 @@ const server = http.createServer((req, res) => {
   const bodies = served();
   if (url === '/__release/setup.js') return send(fs.readFileSync(OLD_SETUP), 'text/javascript');
   if (url === '/commissioning/vendor/esptool.js') return send(ESPTOOL, 'text/javascript');
-  if (url === '/commissioning/manifest-key.js') {
-    return send(`export const MANIFEST_KEY = '${TEST_KEY}';\nexport const AIRFROG_MANIFEST = '${origin}/airfrog.json';\n`,
+  if (url === '/commissioning/release-keys.js') {
+    return send(`export const RELEASE_KEYS = ['${TEST_KEY}'];\nexport const AIRFROG_MANIFEST = '${origin}/airfrog.json';\n`,
       'text/javascript');
   }
   if (bodies[url]) return send(bodies[url], 'application/json');
@@ -228,7 +230,7 @@ try {
   {
     const page = await connected(boardOf('ESP32-C3', C3, 1));
     await page.eval(`document.getElementById('keep').click()`);
-    await page.until(`document.getElementById('firmware-msg').textContent.startsWith('No response from Airfrog over serial.')`, 40000);
+    await page.until(`document.getElementById('firmware-msg').textContent.startsWith(${JSON.stringify(COMMISSIONING_FIRMWARE.NO_SERIAL_RESPONSE)})`, 40000);
     await page.eval(`window.__calls.length = 0; window.__board.name = 'ESP32-S3'; window.__board.features = ['WiFi'];
       document.getElementById('keep').click()`);
     await page.until(`document.getElementById('firmware-msg').textContent === 'Airfrog model not recognised.'`);
@@ -246,7 +248,7 @@ try {
   {
     const page = await connected(boardOf('ESP32-S3', S3_PSRAM, 2));
     await page.eval(`document.getElementById('keep').click()`);
-    await page.until(`document.getElementById('firmware-msg').textContent.startsWith('No response from Airfrog over serial.')`, 40000);
+    await page.until(`document.getElementById('firmware-msg').textContent.startsWith(${JSON.stringify(COMMISSIONING_FIRMWARE.NO_SERIAL_RESPONSE)})`, 40000);
     await page.eval(`window.__calls.length = 0; window.__board.name = 'ESP32-C3'; window.__board.features = ['WiFi'];
       document.getElementById('keep').click()`);
     await page.until(`document.getElementById('firmware-msg').textContent === 'Airfrog board changed. Check the model.'`);
@@ -328,7 +330,7 @@ try {
     const mount = `(async () => { const { FakeAirfrog, pipe } = await import('/tests/commissioning/fake-airfrog.mjs');
       const setup = await import('/__release/setup.js');
       const [client, airfrog] = pipe();
-      new FakeAirfrog(airfrog, { joinAfter: Infinity, saved: { hostname: 'bench', wifi: { mode: 0, ssid: 'bench-net',
+      new FakeAirfrog(airfrog, { joinAfter: Infinity, noSha256: true, saved: { hostname: 'bench', wifi: { mode: 0, ssid: 'bench-net',
         password: 'wifi-secret', ipv4: new Uint8Array(16) } } });
       // The release's module is from before the serial names, so its exports are the J2 ones.
       const j2 = new setup.J2(client);

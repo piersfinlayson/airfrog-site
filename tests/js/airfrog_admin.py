@@ -11,6 +11,8 @@ Usage: airfrog_admin.py ADDRESS:PORT HOST [PASSWORD] COMMAND [ARG]
   PASSWORD      Airfrog's password, '-' for none
   COMMAND       get-aliases | set-aliases A,B | set-password PW | clear-password
 
+SET_PASSWORD's key is encrypted on a logged-in connection.
+
 The AIRFROG_V2 environment variable is the airfrog-v2 checkout.
 """
 
@@ -73,10 +75,10 @@ elif command == "set-aliases":
 elif command == "set-password":
     salt = os.urandom(16)
     k = hashlib.pbkdf2_hmac("sha256", arg.encode(), salt, h["iterations"])
-    t, p = c.command(q.SET_PASSWORD, k + salt)
+    t, p = c.command(q.SET_PASSWORD, q.password_fields(k, salt, c.session))
     assert t == q.AIRFROG_CMD, f"SET_PASSWORD failed: {p.hex()}"
 elif command == "clear-password":
-    t, p = c.command(q.SET_PASSWORD, bytes(48))
+    t, p = c.command(q.SET_PASSWORD, q.password_fields(bytes(32), bytes(16), c.session))
     assert t == q.AIRFROG_CMD, f"SET_PASSWORD failed: {p.hex()}"
 else:
     sys.exit(f"unknown command {command}")

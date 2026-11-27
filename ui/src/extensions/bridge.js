@@ -5,40 +5,70 @@
 // The Airfrog UI's side of an extension UI's connection. The extension UI is
 // in a frame from another website and calls Airfrog.connectExtension(). The
 // Airfrog UI opens a connection of its own for it, logs in and signs, and
-// forwards only what ac4-design.md section 4 allows (section 6, "How an
-// Extension's UI reaches Airfrog").
+// forwards only the messages route() allows. An extension UI from a website
+// in the Airfrog manifest's full_access_websites has every request
+// forwarded. Its SET_PASSWORD's key is sent in the clear, as its connection
+// has no session key, so it is encrypted here with the forwarding
+// connection's.
 
 import {
     AIRFROG_CMD, AirfrogError, CLAIM, ERROR, EXTENSION_KEY, EXT_CMD, EXT_NOTIFY, HEADER_RESPONSE, HELLO, IDENTIFY,
     RELEASE, TARGET_CMD, errorToBridge,
 } from '../../../js/awp.js';
-import { Command, ERROR_OUT_OF_RANGE, decodeAirfrogCmd, decodeExtCmd, encodeError } from '../../../js/schema.js';
-import { AIRFROG_TLD } from '../../../js/urls.js';
+import {
+    Command, ERROR_OUT_OF_RANGE, PASSWORD_LABEL, SET_PASSWORD_LEN, decodeAirfrogCmd, decodeExtCmd, encodeAirfrogCmd,
+    encodeError,
+} from '../../../js/schema.js';
+import { hmacSha256 } from '../../../js/sha256.js';
 
 const FORWARDED = new Set([CLAIM, RELEASE, TARGET_CMD, IDENTIFY]);
 const GET_COMMANDS = new Set(Object.entries(Command).filter(([k]) => k.startsWith('GET_')).map(([, v]) => v));
 
 /**
- * Whether an extension UI from origin is on airfrog.org, where only the owner
- * publishes, so every request is forwarded.
+ * Whether an extension UI from origin has full access: origin is one of
+ * websites exactly, so a subdomain isn't included.
  * @param {string} origin
+ * @param {Array<string>} websites - the Airfrog manifest's
+ *        full_access_websites
  */
-export function isTrusted(origin) {
-    try {
-        const tld = new URL(AIRFROG_TLD);
-        const u = new URL(origin);
-        return u.protocol === tld.protocol && u.port === tld.port
-            && (u.hostname === tld.hostname || u.hostname.endsWith(`.${tld.hostname}`));
-    } catch (e) {
-        return false;
+export function isTrusted(origin, websites) {
+    return websites.some((w) => {
+        try {
+            return new URL(w).origin === origin;
+        } catch (e) {
+            return false;
+        }
+    });
+}
+
+/**
+ * A forwarded message's payload: unchanged, but for SET_PASSWORD on a
+ * logged-in connection, whose key is XORed with HMAC-SHA256(S,
+ * PASSWORD_LABEL ‖ salt), removal included.
+ * @param {number} type
+ * @param {Uint8Array} payload
+ * @param {Uint8Array|null} s - the forwarding connection's key S, null when
+ *        Airfrog doesn't have a password
+ * @returns {Uint8Array}
+ */
+export function forwarded(type, payload, s) {
+    const cmd = type === AIRFROG_CMD ? decodeAirfrogCmd(payload) : null;
+    if (!s || cmd?.command !== Command.SET_PASSWORD || cmd.fields.length !== SET_PASSWORD_LEN) {
+        return payload;
     }
+    const fields = cmd.fields.slice();
+    const pad = hmacSha256(s, new TextEncoder().encode(PASSWORD_LABEL), fields.subarray(32));
+    for (let i = 0; i < 32; i++) {
+        fields[i] ^= pad[i];
+    }
+    return encodeAirfrogCmd({ command: cmd.command, fields });
 }
 
 /**
  * The Airfrog UI's action for a message from an extension UI.
  * @param {*} message - the message's { type, payload }
  * @param {string} name - the extension name
- * @param {boolean} trusted - whether the extension UI is on airfrog.org
+ * @param {boolean} trusted - whether the extension UI has full access
  * @returns {'forward'|'drop'|'not-installed'} not-installed: EXT_CMD to
  *          another extension, answered with ERROR OUT_OF_RANGE
  */
@@ -89,16 +119,20 @@ export class FrameLink {
      * @param {function(): Window|null} options.target - the frame's window
      * @param {function(): Promise<import('../../../js/awp.js').AwpSocket>} options.open -
      *        opens and logs in a new connection to Airfrog
+     * @param {function(): Array<string>} [options.fullAccess] - the
+     *        Airfrog manifest's full_access_websites, read at each
+     *        connection
      * @param {function()} [options.onConnect] - called on each connection
      *        request from the extension UI
      * @param {function(number)} [options.onHeight] - called with the
      *        extension UI's page height in pixels, which its open connection
      *        posts
      */
-    constructor({ name, origin, target, open, onConnect = () => {}, onHeight = () => {} }) {
+    constructor({ name, origin, target, open, fullAccess = () => [], onConnect = () => {}, onHeight = () => {} }) {
         this.name = name;
         this.origin = origin;
-        this.trusted = isTrusted(origin);
+        this.fullAccess = fullAccess;
+        this.trusted = false;
         this.target = target;
         this.open = open;
         this.onConnect = onConnect;
@@ -138,7 +172,8 @@ export class FrameLink {
         switch (route(message, this.name, this.trusted)) {
             case 'forward':
                 try {
-                    this.#socket?.send(message.type, message.payload);
+                    const socket = this.#socket;
+                    socket?.send(message.type, forwarded(message.type, message.payload, socket.key));
                 } catch (e) {
                     // The connection closed, and onclose has posted why
                 }
@@ -218,6 +253,7 @@ export class FrameLink {
 
     #attach(id, socket) {
         this.#socket = socket;
+        this.trusted = isTrusted(this.origin, this.fullAccess());
         socket.onclose = (error) => {
             if (this.#socket === socket) {
                 this.#socket = null;

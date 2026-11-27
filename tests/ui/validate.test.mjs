@@ -8,8 +8,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    checkAliases, checkHostname, checkWebsite, checkNewPassword, checkSettings, checkWifi, contiguous, parseIpv4,
+    checkAliases, checkHostname, checkWebsite, checkNewPassword, checkSettings, checkWifi, checkWifiAp, contiguous,
+    followsRule, parseIpv4,
 } from '../../js/setup/validate.js';
+import { PASSWORD_RULE, WIFI_AP, NETWORK } from '../../js/messages.js';
 import { encodeSetWifiSta } from '../../js/setup/protocol.js';
 
 const fieldsOf = (r) => r.errors.map(e => e.field);
@@ -101,9 +103,39 @@ test('a website for the authorised websites', () => {
 });
 
 test("Airfrog's new password, entered twice", () => {
-    assert.deepEqual(checkNewPassword('frog pond', 'frog pond'), []);
+    assert.deepEqual(checkNewPassword('Frog pond 1', 'Frog pond 1'), []);
     assert.deepEqual(checkNewPassword('', '').map(e => e.field), ['password']);
-    assert.deepEqual(checkNewPassword('a', 'b').map(e => e.field), ['repeat']);
+    assert.deepEqual(checkNewPassword('Frogpond1', 'Frogpond2').map(e => e.field), ['repeat']);
+    assert.deepEqual(checkNewPassword('frog', 'frog'), [{ field: 'password', message: PASSWORD_RULE.NOT_MET }],
+        'the password rule is checked before the repeat');
+});
+
+test('the password rule', () => {
+    for (const ok of ['Abcdefg1', 'Pässwört9', 'ÉCOLE École 7']) {
+        assert.ok(followsRule(ok), ok);
+    }
+    // Rust's is_numeric, is_uppercase and is_lowercase: Number (Nd, Nl, No),
+    // Uppercase and Lowercase, which include more than Lu, Ll and Nd.
+    assert.ok(followsRule('Abcdefg½'), 'a fraction is a number');
+    assert.ok(followsRule('Abcdefgⅻ'), 'a letter number is a number');
+    assert.ok(followsRule('Ⓐbcdefg1'), 'a circled capital is upper case');
+    assert.ok(followsRule('ABCDEFGª1'), 'a feminine ordinal is lower case');
+    assert.ok(!followsRule('abcdefgǅ1'), 'a title case letter is neither');
+    for (const bad of ['Abcdef1', 'abcdefg1', 'ABCDEFG1', 'Abcdefgh', '']) {
+        assert.ok(!followsRule(bad), bad);
+    }
+    assert.ok(!followsRule('Ab1😀😀😀😀'), 'characters, not UTF-16 units, are counted');
+    assert.ok(followsRule('Ab1😀😀😀😀😀'));
+});
+
+test("the access point's name and password", () => {
+    assert.deepEqual(checkWifiAp('bench-ap', 'apsecret').errors, []);
+    assert.deepEqual([...checkWifiAp('ab', 'apsecret').fields], [2, 0, 97, 98, 8, 0, ...new TextEncoder().encode('apsecret')]);
+    assert.deepEqual(checkWifiAp('', 'apsecret').errors, [{ field: 'apSsid', message: NETWORK.INVALID_SSID }]);
+    assert.deepEqual(checkWifiAp('x'.repeat(33), 'apsecret').errors.map(e => e.field), ['apSsid']);
+    assert.deepEqual(checkWifiAp('ap', 'short').errors, [{ field: 'apPassword', message: WIFI_AP.INVALID_PASSWORD }]);
+    assert.deepEqual(checkWifiAp('ap', 'x'.repeat(64)).errors.map(e => e.field), ['apPassword']);
+    assert.equal(checkWifiAp('ap', 'x'.repeat(63)).errors.length, 0);
 });
 
 test('target settings', () => {

@@ -12,6 +12,11 @@
 
 import { hmacSha256, pbkdf2HmacSha256, sha256 } from '../../js/sha256.js';
 import { IMAGE_MODEL_OFFSET } from '../../js/schema.js';
+import { AIRFROG_MANIFEST, RELEASE_KEYS } from '../../commissioning/release-keys.js';
+
+/** HELLO's interface values. */
+export const STATION = 0, SERIAL = 1, AP = 2, AP_FIRST_SETUP = 3, AP_BUTTON = 4;
+const OVER_AP = [AP, AP_FIRST_SETUP, AP_BUTTON];
 
 export const HELLO = 1, LOGIN = 2, TARGET = 3, ERROR = 4, IDENTIFY = 5, AIRFROG_CMD = 0x10,
     CLAIM = 0x20, RELEASE = 0x21, TARGET_CMD = 0x22, EXT_CMD = 0x30, EXT_NOTIFY = 0x31;
@@ -92,13 +97,17 @@ export function targetPayload(t) {
 export class FakeAirfrog {
     constructor(config = {}) {
         this.config = {
-            password: null, iterations: 64, maxTransfer: 4096, revision: 1, chip: 5, model: 1, otaModel: null, wamr: [0, 0, 0], version: [0, 2, 0],
+            // HELLO's interface, release keys in hex and manifest_url
+            interface: STATION, keys: RELEASE_KEYS, manifestUrl: AIRFROG_MANIFEST,
+            password: null, iterations: 100000, maxTransfer: 4096, revision: 1, chip: 5, model: 1, otaModel: null, wamr: [0, 0, 0], version: [0, 2, 0],
             hostname: 'airfrog', aliases: [], websites: [], ssid: 'home', rssi: -52, board: 0x102, pinMap: ONE_ROM_PIN_MAP,
-            settings: { board: 0, bootWindowMs: 0xFFFF, changeCheckMs: 1000, flags: 1, wifiRescanS: 3600,
+            settings: { board: 0, bootWindowMs: 0xFFFF, changeCheckMs: 1000, flags: 0, wifiRescanS: 3600,
                 wifiRescanDb: 10 },
             image: new Uint8Array(0), caps: { extMinor: 3, features: 0x7f }, serveStatus: 0, serveMs: 0, resetMs: 0, saveMs: 0,
             restartMs: 30, newVersion: null, corruptOta: false, rollback: false, otaErrors: {}, busyHolder: null, flashSize: 0x400000,
             extensions: [], modules: {}, installMs: 0,
+            // A connection that hasn't logged in is closed with 4005 after loginMs, as Airfrog's AF_LOGIN_MS
+            loginMs: 5000,
             commit: '1a2b3c4d', newCommit: '5e6f7a8b', wifiPassword: true, staState: 2, staReason: 0, staStatic: null,
             apOn: false,
             networks: [[-48, 1, 6, 'home'], [-63, 1, 11, 'Workshop'], [-71, 0, 1, 'Cafe guest'], [-84, 2, 6, 'Office']],
@@ -106,8 +115,16 @@ export class FakeAirfrog {
             ...config,
         };
         this.target = this.config.target ?? TARGETS.running;
+        this.interface = this.config.interface;
+        this.apSsid = 'airfrog-1a2b';
+        // The signature of the last OTA_BEGIN and EXT_BEGIN
+        this.signatures = [];
         this.version = this.config.version;
         this.commit = this.config.commit;
+        // The running image's SHA-256, GET_FW_INFO's. After an update it is
+        // the new image's, unless config.rollback, where the new image
+        // doesn't boot.
+        this.runningSha = sha256(encoder.encode('the factory image'));
         this.wifiPassword = this.config.wifiPassword;
         this.ssid = this.config.ssid;
         this.scan = { state: 0, networks: [] };
@@ -171,10 +188,16 @@ export class FakeAirfrog {
         this.restarting = true;
         setTimeout(() => {
             this.restarting = false;
+            if (update && !this.config.rollback && this.finished) {
+                this.runningSha = sha256(this.finished.data);
+            }
             if (update && this.config.newVersion && !this.config.rollback) {
                 this.version = this.config.newVersion;
                 this.commit = this.config.newCommit;
                 this.waitingConfirm = true;
+                // The new firmware's release keys and manifest address
+                this.config.keys = this.config.newKeys ?? this.config.keys;
+                this.config.manifestUrl = this.config.newManifest ?? this.config.manifestUrl;
             }
         }, this.config.restartMs);
     }
@@ -203,8 +226,14 @@ class Session {
     start() {
         const c = this.fake.config;
         const has = Boolean(this.fake.key);
+        if (has) {
+            this.opened = Date.now();
+            setTimeout(() => { if (!this.loggedIn) this.close(4005); }, c.loginMs);
+        }
+        const keys = c.keys.map(k => Uint8Array.from(k.match(/../g), b => parseInt(b, 16)));
         this.send(HELLO, cat(u16(c.revision), u16(has ? 1 : 0), u32(c.maxTransfer), has ? this.ns : new Uint8Array(16),
-            has ? this.fake.salt : new Uint8Array(16), u32(c.iterations)));
+            has ? this.fake.salt : new Uint8Array(16), u32(c.iterations), u16(this.fake.interface), u16(keys.length),
+            ...keys, text(c.manifestUrl)));
         if (!has) {
             this.loggedIn = true;
             this.send(TARGET, targetPayload(this.fake.target));
@@ -247,6 +276,11 @@ class Session {
 
     receive(bytes) {
         if (this.closed) return;
+        // The timer above can't run while the page computes on this thread,
+        // but Airfrog would have closed the connection by now.
+        if (!this.loggedIn && this.opened && Date.now() - this.opened >= this.fake.config.loginMs) {
+            return this.close(4005);
+        }
         if (bytes.length < 48) return this.close(4000);
         const v = view(bytes);
         const type = v.getUint16(0, true);
@@ -264,6 +298,10 @@ class Session {
     handle(type, payload) {
         const fake = this.fake;
         if (!this.loggedIn) {
+            // SET_PASSWORD before LOGIN, allowed over the recovery button's access point
+            if (type === AIRFROG_CMD && view(payload).getUint16(0, true) === 0x06) {
+                return fake.interface === AP_BUTTON ? this.airfrogCmd(0x06, payload.subarray(2)) : this.error(20);
+            }
             if (type !== LOGIN || payload.length !== 48) return this.close(4000);
             if (fake.config.blockSeconds) return this.close(4007, String(fake.config.blockSeconds));
             const nc = payload.subarray(0, 16);
@@ -322,7 +360,7 @@ class Session {
             case 0x01: return this.reply(cat(u16(c.chip), new Uint8Array([0, 4]), u32(c.flashSize), u32(0),
                 new Uint8Array([0x24, 0x0a, 0xc4, 1, 2, 3]), u16(c.model), encoder.encode('4146240AC4010203')));
             case 0x02: return this.reply(cat(new Uint8Array(fake.version), new Uint8Array(1), u16(c.bootloader), u16(0),
-                new Uint8Array([...c.wamr, 0]), text(fake.commit)));
+                new Uint8Array([...c.wamr, 0]), fake.runningSha, text(fake.commit)));
             case 0x03: {
                 // staStatic: the saved static address, netmask, gateway and
                 // DNS server, reported whether connected or not.
@@ -335,9 +373,10 @@ class Session {
                     ip(3, [192, 168, 1, 1]), u16(c.staState === 3 ? c.staReason : 0), text(fake.ssid)));
             }
             case 0x04: return this.reply(c.apOn && !fake.apStopped
-                ? cat(u16(1), u16(1), new Uint8Array(c.apIpv4), new Uint8Array(16), text('airfrog-1a2b'))
-                : cat(u16(0), u16(0), new Uint8Array(4), new Uint8Array(16), text('airfrog-1a2b')));
+                ? cat(u16(1), u16(1), new Uint8Array(c.apIpv4), new Uint8Array(16), text(fake.apSsid))
+                : cat(u16(0), u16(0), new Uint8Array(4), new Uint8Array(16), text(fake.apSsid)));
             case 0x05: {
+                if (OVER_AP.includes(fake.interface) && !fake.key) return this.error(20);
                 const flags = view(f).getUint16(2, true);
                 const [ssid, at] = readText(f, 20);
                 const [password] = readText(f, at);
@@ -346,11 +385,16 @@ class Session {
                     address: f.slice(4, 8), netmask: f.slice(8, 12), ssid, password };
                 fake.ssid = ssid;
                 if (!(flags & 1)) fake.wifiPassword = Boolean(password);
+                if (fake.interface === AP_FIRST_SETUP) fake.interface = AP;
                 this.reply(new Uint8Array(0));
                 return fake.closeAll(4006);
             }
             case 0x06: {
-                const key = f.slice(0, 32);
+                // On a logged-in connection the key is XORed with HMAC-SHA256(S, 'password' ‖ salt).
+                const pad = this.key ? hmacSha256(this.key, encoder.encode('password'), f.slice(32, 48))
+                    : new Uint8Array(32);
+                fake.sentKey = f.slice(0, 32);
+                const key = f.slice(0, 32).map((b, i) => b ^ pad[i]);
                 fake.key = key.every(b => b === 0) ? null : key;
                 fake.salt = f.slice(32, 48);
                 this.reply(new Uint8Array(0));
@@ -388,6 +432,9 @@ class Session {
                 const wifiRescanS = v.getUint32(12, true), wifiRescanDb = v.getUint16(16, true);
                 if ((board !== 0 && board !== c.board) || (flags & ~3) || (wifiRescanS && wifiRescanS < 60)
                     || wifiRescanDb < 1 || wifiRescanDb > 100) return this.error(7);
+                if ((flags & 1) && !(fake.settings.flags & 1) && ![SERIAL, AP_FIRST_SETUP, AP_BUTTON].includes(fake.interface)) {
+                    return this.error(20);
+                }
                 fake.settings = { board, bootWindowMs: v.getUint16(4, true), changeCheckMs: v.getUint16(6, true),
                     flags, wifiRescanS, wifiRescanDb };
                 // saveMs holds the reply so the page can be read while it saves.
@@ -398,9 +445,15 @@ class Session {
             }
             case 0x0E: {
                 if (fake.waitingConfirm || (fake.ota && fake.ota.session !== this)) return this.error(9);
+                if (f.length !== 110) return this.close(4000);
                 const size = view(f).getUint32(0, true);
                 if (size === 0) return this.error(7);
-                fake.ota = { session: this, size, sha256: f.slice(4, 36), data: new Uint8Array(size), written: 0 };
+                const signature = f.slice(36);
+                fake.signatures.push(signature);
+                const unsigned = signature.every(b => b === 0);
+                if (unsigned && fake.interface !== AP_BUTTON) return this.error(20);
+                fake.ota = { session: this, size, sha256: f.slice(4, 36), data: new Uint8Array(size), written: 0,
+                    unsigned };
                 return this.reply(new Uint8Array(0));
             }
             case 0x0F: {
@@ -422,12 +475,25 @@ class Session {
                     fake.ota = null;
                     return this.error(16);
                 }
+                // Older firmware installs only over the recovery button's access point.
+                if (held < IMAGE_MODEL_OFFSET + 2 && ota.written >= IMAGE_MODEL_OFFSET + 2 && fake.interface !== AP_BUTTON) {
+                    const v = decoder.decode(ota.data.subarray(48, 80)).replace(/\0.*$/s, '');
+                    const parts = /^\d+\.\d+\.\d+$/.test(v) ? v.split('.').map(Number) : null;
+                    const older = !parts || parts.some((n, i) => n !== fake.version[i]
+                        && parts.findIndex((m, j) => m !== fake.version[j]) === i && n < fake.version[i]);
+                    if (older) {
+                        fake.ota = null;
+                        return this.error(20);
+                    }
+                }
                 if (c.corruptOta && offset === 0) ota.data[1] ^= 0x01;
                 return this.reply(new Uint8Array(0));
             }
             case 0x10: {
                 const ota = fake.ota;
                 if (!ota || ota.session !== this) return this.close(4000);
+                // finishClose: the connection closes with that code in place of the response
+                if (c.finishClose) return this.close(c.finishClose);
                 fake.ota = null;
                 fake.finished = ota;
                 if (ota.written !== ota.size || ota.size < IMAGE_MODEL_OFFSET + 2
@@ -439,6 +505,16 @@ class Session {
                 fake.waitingConfirm = false;
                 fake.confirmed = true;
                 return this.reply(new Uint8Array(0));
+            case 0x24: {
+                if (!OVER_AP.includes(fake.interface)) return this.error(20);
+                const [ssid, at] = readText(f, 0);
+                const [password] = readText(f, at);
+                if (!ssid || ssid.length > 32 || password.length < 8 || password.length > 63) return this.error(7);
+                fake.apSsid = ssid;
+                fake.apPassword = password;
+                this.reply(new Uint8Array(0));
+                return fake.closeAll(4006);
+            }
             case 0x13:
                 if (f.length) return this.close(4000);
                 this.reply(new Uint8Array(0));
@@ -461,11 +537,16 @@ class Session {
             case 0x17: return this.reply(cat(u16(fake.extensions.length),
                 ...fake.extensions.map(x => cat(u16(x.flags), u16(0), u16(0), x.header))));
             case 0x18: {
-                if (f.length !== 40) return this.close(4000);
+                if (f.length !== 114) return this.close(4000);
                 if (fake.install && fake.install.session !== this && !fake.install.session.closed) return this.error(10);
                 const v = view(f);
+                const signature = f.slice(40);
+                fake.signatures.push(signature);
+                const unsigned = signature.every(b => b === 0);
+                if (v.getUint16(36, true) & ~1) return this.error(7);
+                if (unsigned && ![SERIAL, AP_BUTTON].includes(fake.interface)) return this.error(20);
                 fake.install = { session: this, size: v.getUint32(0, true), sha: f.slice(4, 36),
-                    flags: v.getUint16(36, true), data: [] , length: 0 };
+                    flags: v.getUint16(36, true) | (unsigned ? 2 : 0), data: [], length: 0 };
                 return this.reply(new Uint8Array(0));
             }
             case 0x19: {

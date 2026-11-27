@@ -5,13 +5,12 @@
 // airfrog.org/commissioning. esptool-js identifies Airfrog's MCU and installs
 // the firmware over Web Serial. Then the page starts the firmware and runs
 // Airfrog's internal JS setup module from the release Airfrog runs over serial,
-// which reads Airfrog's settings and changes them. See section 2 of
-// airfrog-v2/docs/ac3-design.md.
+// which reads Airfrog's settings and changes them.
 
 import { ESPLoader, Transport } from './vendor/esptool.js';
 import { explainStart, sentence } from './explain.js';
 import { md5Hex } from './md5.js';
-import { AIRFROG_MANIFEST, MANIFEST_KEY } from './manifest-key.js';
+import { AIRFROG_MANIFEST, RELEASE_KEYS } from './release-keys.js';
 import { InstalledError, checkInstalled } from './image.js';
 import {
   ReleaseError, boardModels, findRelease, latestRelease, loadFirmware, loadReleases, loadSetup, modelReleases,
@@ -27,7 +26,7 @@ import {
 } from '../js/messages.js';
 
 // The oldest interface of Airfrog's internal JS setup module this page runs with.
-const SETUP_API = 2;
+const SETUP_API = 3;
 const FLASH_SIZE = 4 * 1024 * 1024;
 const FLASH_BAUD = 460800;
 const SERIAL_BAUD = 115200;
@@ -521,9 +520,9 @@ async function start() {
   $('keep').addEventListener('click', keep);
   refresh();
   try {
-    firmware = await loadReleases(AIRFROG_MANIFEST, MANIFEST_KEY);
+    firmware = await loadReleases(AIRFROG_MANIFEST, RELEASE_KEYS);
   } catch (err) {
-    manifestError = [sentence(err), MANIFEST_KEY ? COMMISSIONING_FIRMWARE.RELOAD : ''];
+    manifestError = [sentence(err), RELEASE_KEYS.length ? COMMISSIONING_FIRMWARE.RELOAD : ''];
     fail('firmware', manifestError);
     return;
   }

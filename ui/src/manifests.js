@@ -2,16 +2,17 @@
 //
 // MIT License
 
-// The signed manifests Airfrog's full user interface reads: the Airfrog
-// manifest, the firmware manifest and the extensions manifest
-// (airfrog-v2/docs/ac3-design.md, "Manifests"). Each is verified as Airfrog's
-// home page verifies it, with the full user interface's own copy of the
-// manifest key. The page is on http, where crypto.subtle isn't available, so
-// Ed25519 and SHA-512 are noble-ed25519's and noble-hashes'.
+// The manifests Airfrog's full user interface reads: the Airfrog
+// manifest, the firmware manifest and the extensions manifest. The Airfrog
+// manifest is signed with one of the full user interface's own release keys.
+// Another manifest with a key in the Airfrog manifest is signed with that
+// key, and one without is read only from an https address. The page is on
+// http, where crypto.subtle isn't available, so Ed25519 and SHA-512 are
+// noble-ed25519's and noble-hashes'.
 
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
-import { AIRFROG_MANIFEST, MANIFEST_KEY } from '../../commissioning/manifest-key.js';
+import { AIRFROG_MANIFEST, RELEASE_KEYS } from '../../commissioning/release-keys.js';
 import { COMMISSIONING_FIRMWARE, HOME_PAGE } from '../../js/messages.js';
 import { download } from '../../js/setup/download.js';
 import { downloadText } from './download.js';
@@ -38,6 +39,12 @@ export class ManifestError extends Error {
 }
 
 const isText = (v) => typeof v === 'string' && v !== '';
+const KEY = /^[0-9a-f]{64}$/;
+const MANIFESTS = ['ui_manifest', 'firmware_manifest', 'support_firmware_manifest', 'cli_manifest',
+    'extensions_manifest'];
+
+/** Whether v is a manifest's entry in the Airfrog manifest: its url and an optional key. */
+const isEntry = (v) => typeof v === 'object' && v !== null && isText(v.url) && (v.key === undefined || KEY.test(v.key));
 
 function fromHex(s) {
     return new Uint8Array(s.match(/../g).map((b) => parseInt(b, 16)));
@@ -52,10 +59,11 @@ async function fetched(url) {
 }
 
 /**
- * Whether minisig, a minisign signature file, is key's legacy Ed25519
- * signature of body. The signature is the file's second line.
+ * Whether minisig, a minisign signature file, is the legacy Ed25519
+ * signature of body by one of keys, selected by its key ID. The signature
+ * is the file's second line.
  */
-function signedBy(minisig, body, key) {
+function signedBy(minisig, body, keys) {
     let signature;
     try {
         const line = new TextDecoder().decode(minisig).split('\n')[1];
@@ -63,8 +71,10 @@ function signedBy(minisig, body, key) {
     } catch (e) {
         return false;
     }
+    const id = Array.from(signature.subarray(2, 10), (b) => b.toString(16).padStart(2, '0')).join('');
+    const key = keys.find((k) => k.startsWith(id));
     try {
-        return signature.length === 74 && signature[0] === 0x45 && signature[1] === 0x64
+        return signature.length === 74 && signature[0] === 0x45 && signature[1] === 0x64 && Boolean(key)
             && ed.verify(signature.subarray(10), body, fromHex(key));
     } catch (e) {
         return false;
@@ -81,9 +91,8 @@ function complete(m, type) {
         return false;
     }
     if (type === 'airfrog') {
-        return isText(m.ui_manifest) && isText(m.firmware_manifest) && isText(m.support_firmware_manifest)
-            && isText(m.cli_manifest) && isText(m.extensions_manifest) && isText(m.js_library)
-            && m.js_library.endsWith('/');
+        return MANIFESTS.every((name) => isEntry(m[name])) && isText(m.js_library) && m.js_library.endsWith('/')
+            && Array.isArray(m.full_access_websites) && m.full_access_websites.every(isText);
     }
     if (type === 'extensions') {
         return typeof m.extensions === 'object' && m.extensions !== null && !Array.isArray(m.extensions);
@@ -94,6 +103,8 @@ function complete(m, type) {
 export class Manifests {
     /** The extensions manifest's address, from the Airfrog manifest once it loads, or null. */
     extensionsUrl = null;
+    /** The Airfrog manifest's full_access_websites, empty until it loads. */
+    fullAccessWebsites = [];
     #airfrog = null;
     #firmware = null;
     #extensions = null;
@@ -101,17 +112,18 @@ export class Manifests {
     /**
      * @param {object} [options]
      * @param {string} [options.url] - the Airfrog manifest's address
-     * @param {string} [options.key] - the manifest key's public half in hex
+     * @param {Array<string>} [options.keys] - the release keys in hex
      */
-    constructor({ url = AIRFROG_MANIFEST, key = MANIFEST_KEY } = {}) {
+    constructor({ url = AIRFROG_MANIFEST, keys = RELEASE_KEYS } = {}) {
         this.url = url;
-        this.key = key;
+        this.keys = keys;
     }
 
     /** The Airfrog manifest, loaded once, and again after a failure. */
     airfrog() {
-        this.#airfrog ??= this.#manifestAt(this.url, 'airfrog').then((m) => {
-            this.extensionsUrl = m.extensions_manifest;
+        this.#airfrog ??= this.#manifestAt({ url: this.url }, 'airfrog', this.keys).then((m) => {
+            this.extensionsUrl = m.extensions_manifest.url;
+            this.fullAccessWebsites = m.full_access_websites;
             return m;
         }).catch((e) => {
             this.#airfrog = null;
@@ -137,8 +149,8 @@ export class Manifests {
     extensions() {
         this.#extensions ??= (async () => {
             try {
-                const url = (await this.airfrog()).extensions_manifest;
-                return { url, manifest: await this.#manifestAt(url, 'extensions') };
+                const entry = (await this.airfrog()).extensions_manifest;
+                return { url: entry.url, manifest: await this.#manifestAt(entry, 'extensions') };
             } finally {
                 this.#extensions = null;
             }
@@ -146,15 +158,26 @@ export class Manifests {
         return this.#extensions;
     }
 
-    /** Fetches the manifest of type at url and its signature file, url.minisig, and verifies them. */
-    async #manifestAt(url, type) {
-        if (!this.key) {
-            throw new ManifestError(COMMISSIONING_FIRMWARE.MANIFEST_KEY_NOT_SET);
+    /**
+     * Fetches the manifest of type at entry.url. With keys, or entry.key,
+     * its signature file url.minisig is fetched too and verified. Without
+     * either, url must be https.
+     * @param {{url: string, key?: string}} entry
+     * @param {string} type
+     * @param {Array<string>} [keys] - the keys that may sign it
+     */
+    async #manifestAt({ url, key }, type, keys = key ? [key] : []) {
+        if (type === 'airfrog' && !keys.length) {
+            throw new ManifestError(COMMISSIONING_FIRMWARE.RELEASE_KEYS_NOT_SET);
         }
         const words = type === 'firmware' ? FIRMWARE_WORDS : MANIFEST_WORDS;
+        if (!keys.length && !url.startsWith('https://')) {
+            throw new ManifestError(words.invalid, `${url} has no key and isn't https`);
+        }
         const fresh = `?t=${Date.now()}`;
-        const [body, minisig] = await Promise.all([fetched(url + fresh), fetched(`${url}.minisig${fresh}`)]);
-        if (!signedBy(minisig, body, this.key)) {
+        const [body, minisig] = await Promise.all([fetched(url + fresh),
+            keys.length ? fetched(`${url}.minisig${fresh}`) : null]);
+        if (keys.length && !signedBy(minisig, body, keys)) {
             throw new ManifestError(words.signature, url);
         }
         let manifest;

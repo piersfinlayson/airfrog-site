@@ -9,19 +9,47 @@ import {
     button, card, editable, field, fileChooser, h, input, message, prompt, rows, showErrors, showRow,
 } from './dom.js';
 import { MODELS, mcuText, sizeText, modelName, versionText } from './format.js';
-import { Command, RestartMode, encodeAuthorisedWebsite, encodeRestart, errorText } from './protocol.js';
 import {
-    ABOUT, AUTHORISED_WEBSITES, PASSWORD, RECONNECT, RECONNECTING, RESTART, SETTINGS, UI_VERSION_ROW, UPDATE, VALUES,
+    Command, Interface, RestartMode, encodeAuthorisedWebsite, encodeRestart, errorText, overAp,
+} from './protocol.js';
+import {
+    ABOUT, AUTHORISED_WEBSITES, CONNECTION, PASSWORD, PASSWORD_RULE, RECONNECT, RECONNECTING, RESTART, SETTINGS,
+    UI_VERSION_ROW, UPDATE, VALUES,
 } from '../messages.js';
 import { siteName } from '../awp.js';
 import { ERROR_EXISTS, ERROR_NO_ENTRY } from '../schema.js';
 import { FIRMWARE_UPDATE_IMAGE } from '../urls.js';
-import { checkFirmwareManifest } from './releases.js';
+import { readSignedFile, signatureFor } from '../signed.js';
 import { checkNewPassword, checkWebsite } from './validate.js';
 import {
-    checkFirmwareFile, describeResult, downloadFirmware, firmwareRelease, imageVersion, inFirmwareManifest, keepResult,
-    runUpdate,
+    checkFirmwareFile, describeResult, downloadFirmware, firmwareRelease, imageVersion, isOlder, keepResult, runUpdate,
 } from './update.js';
+
+/** The new password's fields, password and repeat, and the password rule. */
+export function newPasswordFields() {
+    return [field(PASSWORD.NEW_PASSWORD, input('password', { type: 'password', autocomplete: 'new-password' })),
+        field(PASSWORD.CONFIRM_PASSWORD, input('repeat', { type: 'password', autocomplete: 'new-password' })),
+        h('div', { class: 'note rule' }, h('span', { class: 'rule-intro' }, PASSWORD_RULE.INTRO), h('ul', {},
+            ...[PASSWORD_RULE.LENGTH, PASSWORD_RULE.UPPER, PASSWORD_RULE.LOWER, PASSWORD_RULE.NUMBER]
+                .map(text => h('li', {}, text))))];
+}
+
+/**
+ * showErrors() for newPasswordFields() in form. A password that breaks the
+ * rule displays PASSWORD_RULE.NOT_MET in place of the rule's INTRO, above
+ * its bullets, and not on msg.
+ */
+export function showPasswordErrors(form, msg, errors) {
+    const notMet = errors.some(e => e.message === PASSWORD_RULE.NOT_MET);
+    const intro = form.querySelector('.rule-intro');
+    intro.textContent = notMet ? PASSWORD_RULE.NOT_MET : PASSWORD_RULE.INTRO;
+    intro.classList.toggle('bad', notMet);
+    showErrors(form, msg, errors.filter(e => e.message !== PASSWORD_RULE.NOT_MET));
+    if (notMet) {
+        form.elements.password.setAttribute('aria-invalid', 'true');
+    }
+    return errors.length === 0;
+}
 
 /** The New firmware file tooltip for a model's key, for example "mini". */
 function fileHelp(key) {
@@ -40,7 +68,7 @@ export class FirmwareView {
         this.offerRow = h('div', { class: 'row actions', hidden: true }, this.offerButton, this.notes);
         this.chooser = fileChooser(() => this.checkFile());
         this.file = this.chooser.input;
-        // The chosen file once checked: its image and version, or null.
+        // The chosen file once checked: its image, signature and version, or null.
         this.checked = null;
         this.fileCheck = h('span', { class: 'file-check', role: 'status' });
         this.fileButton = button(UPDATE.UPDATE, () => this.updateFromFile(), { disabled: true });
@@ -87,9 +115,11 @@ export class FirmwareView {
         if (!s.fw) {
             return;
         }
-        let note = this.setup.firmwareError ? `${UPDATE.LATEST_UNKNOWN} ${this.setup.firmwareError}` : null;
+        // Over the access point nothing is downloaded, so no release is offered.
+        const ap = overAp(s.interface);
+        let note = this.setup.firmwareError && !ap ? `${UPDATE.LATEST_UNKNOWN} ${this.setup.firmwareError}` : null;
         try {
-            this.release = s.hw ? firmwareRelease(this.setup.firmware, s.hw.model, s.fw.version) : null;
+            this.release = s.hw && !ap ? firmwareRelease(this.setup.firmware, s.hw.model, s.fw.version) : null;
         } catch (e) {
             this.release = null;
             note = `${UPDATE.LATEST_UNKNOWN} ${e.message}`;
@@ -138,25 +168,54 @@ export class FirmwareView {
         const offer = this.release.offer;
         this.setup.setUpdating(true);
         this.msg.say(UPDATE.DOWNLOADING(versionText(offer.version, offer.commit)));
-        let image;
+        let file;
         try {
-            image = await downloadFirmware(offer);
+            file = await downloadFirmware(offer);
         } catch (e) {
             this.msg.say(e.message, 'bad');
             this.setup.setUpdating(false);
             return;
         }
         // The version written is the image's own.
-        const version = imageVersion(image) ?? offer.version;
-        await this.run(image, version, version.replace(/^v/, '') === offer.version.replace(/^v/, '') ? offer.commit : '');
+        const version = imageVersion(file.image) ?? offer.version;
+        const refusal = this.refusal({ signature: file.signature, version });
+        if (refusal) {
+            this.msg.say(refusal, 'bad');
+            this.setup.setUpdating(false);
+            return;
+        }
+        await this.run(file.image, this.sent(file.signature), version,
+            version.replace(/^v/, '') === offer.version.replace(/^v/, '') ? offer.commit : '');
+    }
+
+    /** The signature sent for an image: its own when Airfrog has its key, otherwise none. */
+    sent(signature) {
+        return signatureFor(signature, this.setup.state.releaseKeys);
+    }
+
+    /**
+     * Why the checked file can't be installed over this connection, or null.
+     * A file signed with a key Airfrog doesn't have counts as unsigned.
+     * Unsigned firmware and firmware older than the running firmware install
+     * only over the access point started with the recovery button.
+     */
+    refusal({ signature, version }) {
+        const s = this.setup.state;
+        if (s.interface === Interface.AP_BUTTON) {
+            return null;
+        }
+        if (!this.sent(signature)) {
+            return UPDATE.UNSIGNED_NOT_HERE;
+        }
+        return s.fw && isOlder(version, s.fw.version) ? UPDATE.OLDER_NOT_HERE(versionText(s.fw.version)) : null;
     }
 
     /**
      * Checks the chosen file as soon as it is chosen: a spinner while it
-     * checks, then a tick, or a cross with the reason. A file that isn't in
-     * the firmware manifest is marked unsigned and can still be installed.
-     * When Airfrog's setup started without the firmware manifest, the
-     * manifest is loaded first. Without one, a file isn't marked unsigned.
+     * checks, then a tick, or a cross with the reason. A file that is
+     * unsigned, or signed with a key Airfrog doesn't have, is marked
+     * unsigned. A file this connection can't install is marked with the
+     * reason.
      */
     async checkFile() {
         this.checked = null;
@@ -171,57 +230,47 @@ export class FirmwareView {
         }
         mark('spinner', UPDATE.CHECKING);
         this.setup.render();
-        const image = new Uint8Array(await file.arrayBuffer());
+        const data = new Uint8Array(await file.arrayBuffer());
         if (file !== this.file.files?.[0]) {
             return;
         }
-        const { version, error } = this.setup.state.hw ? checkFirmwareFile(image, this.setup.state.hw.model)
+        const split = readSignedFile(data, 'firmware');
+        const { version, error } = split && this.setup.state.hw ? checkFirmwareFile(split.image, this.setup.state.hw.model)
             : { version: null, error: UPDATE.INVALID_FILE };
-        const firmware = error ? null : await this.signedReleases();
-        if (file !== this.file.files?.[0]) {
-            return;
-        }
+        const checked = error ? null : { ...split, version };
+        const refusal = checked && this.refusal(checked);
         if (error) {
             mark('cross', UPDATE.NOT_VALID, error, 'bad');
-        } else if (firmware && !inFirmwareManifest(firmware, image)) {
-            this.checked = { image, version };
+        } else if (refusal) {
+            mark('cross', UPDATE.NOT_VALID, refusal, 'bad');
+        } else if (!this.sent(checked.signature)) {
+            this.checked = checked;
             mark('tick', UPDATE.VALID, UPDATE.UNSIGNED, 'warn');
         } else {
-            this.checked = { image, version };
+            this.checked = checked;
             mark('tick', UPDATE.VALID);
         }
         this.setup.render();
     }
 
-    /**
-     * The firmware manifest, loaded when Airfrog's setup started without
-     * one, or null when it can't be loaded.
-     */
-    async signedReleases() {
-        if (this.setup.firmware || !this.setup.loadFirmware) {
-            return this.setup.firmware;
-        }
-        this.loaded ??= this.setup.loadFirmware().then(checkFirmwareManifest).catch((e) => {
-            console.debug(`Firmware manifest: ${e.message}`);
-            this.loaded = null;
-            return null;
-        });
-        return this.loaded;
-    }
-
     async updateFromFile() {
-        const { image, version } = this.checked;
-        await this.run(image, version, '');
+        const { image, signature, version } = this.checked;
+        const refusal = this.refusal(this.checked);
+        if (refusal) {
+            this.msg.say(refusal, 'bad');
+            return;
+        }
+        await this.run(image, this.sent(signature), version, '');
     }
 
-    async run(image, version, commit) {
+    async run(image, signature, version, commit) {
         this.setup.setUpdating(true);
         this.progress.value = 0;
         this.progress.hidden = false;
         let result;
         try {
             result = await runUpdate({
-                session: this.setup.session, image, version, commit, previous: this.setup.state.fw,
+                session: this.setup.session, image, signature, version, commit, previous: this.setup.state.fw,
                 onPhase: (text) => this.msg.say(text),
                 onProgress: (fraction) => { this.progress.value = fraction; },
             });
@@ -250,16 +299,14 @@ export class PasswordView {
         this.airfrog = null;
         this.msg = message();
         this.state = h('div', { class: 'note' });
-        this.set = h('button', { class: 'primary' }, PASSWORD.SET_PASSWORD);
         this.confirm = prompt();
         this.remove = button(PASSWORD.REMOVE_PASSWORD, () => this.confirm.ask(
             PASSWORD.CONFIRM_REMOVE, PASSWORD.REMOVE,
             () => this.form.run(() => this.setPassword('')), { danger: true }), { class: 'danger' });
         this.form = editable(h('form', { onsubmit: (e) => { e.preventDefault(); this.form.run(() => this.save()); } },
-            this.state,
-            field(PASSWORD.NEW_PASSWORD, input('password', { type: 'password', autocomplete: 'new-password' })),
-            field(PASSWORD.CONFIRM_PASSWORD, input('repeat', { type: 'password', autocomplete: 'new-password' })),
-            h('div', { class: 'row' }, this.set, this.remove), this.confirm.element, this.msg),
+            this.state, ...newPasswordFields(),
+            h('div', { class: 'row' }, h('button', { class: 'primary' }, SETTINGS.SAVE), this.remove), this.confirm.element,
+            this.msg),
         (f) => f.elements.password.value !== '' && f.elements.repeat.value !== '');
         this.element = card(PASSWORD.TITLE, null, this.form);
     }
@@ -271,13 +318,12 @@ export class PasswordView {
             this.confirm.element.hidden = true;
         }
         this.state.textContent = hasPassword ? PASSWORD.SET : PASSWORD.NOT_SET;
-        this.set.textContent = hasPassword ? PASSWORD.CHANGE_PASSWORD : PASSWORD.SET_PASSWORD;
         this.remove.hidden = !hasPassword;
     }
 
     async save() {
         const f = this.form.elements;
-        if (!showErrors(this.form, this.msg, checkNewPassword(f.password.value, f.repeat.value))) {
+        if (!showPasswordErrors(this.form, this.msg, checkNewPassword(f.password.value, f.repeat.value))) {
             return;
         }
         const password = f.password.value;
@@ -287,26 +333,78 @@ export class PasswordView {
         await this.setPassword(password);
     }
 
-    // On the WebSocket Airfrog closes every connection after SET_PASSWORD,
-    // and the session logs in again with the new password.
     async setPassword(password) {
-        const done = password ? PASSWORD.SET : PASSWORD.REMOVED;
-        this.setup.expectClose({ message: `${done} ${RECONNECTING}`, password: password || null });
-        this.msg.say(SETTINGS.SAVING);
         this.confirm.element.hidden = true;
         this.remove.disabled = true;
         try {
-            await this.setup.setPassword(password);
-        } catch (e) {
-            this.setup.cancelExpected();
-            this.msg.say(`${SETTINGS.SAVE_FAILED} ${errorText(e)}`, 'bad');
-            return;
+            await savePassword(this.setup, this.msg, password);
         } finally {
             this.remove.disabled = false;
         }
-        if (!this.setup.closes) {
-            this.msg.say(done, 'ok');
+    }
+}
+
+/**
+ * Sets Airfrog's password, or removes it with an empty password, displaying
+ * the result on msg. On the WebSocket Airfrog closes every connection after
+ * SET_PASSWORD. The session then logs in again with the new password, or
+ * when logIn is false the login card is displayed for it.
+ */
+async function savePassword(setup, msg, password, logIn = true) {
+    const done = password ? PASSWORD.SET : PASSWORD.REMOVED;
+    const reconnecting = `${done} ${RECONNECTING}`;
+    setup.expectClose(logIn ? { message: reconnecting, password: password || null }
+        : { message: reconnecting, password: null, loginNote: CONNECTION.PASSWORD_SAVED });
+    msg.say(SETTINGS.SAVING);
+    try {
+        await setup.setPassword(password);
+    } catch (e) {
+        setup.cancelExpected();
+        msg.say(`${SETTINGS.SAVE_FAILED} ${errorText(e)}`, 'bad');
+        return;
+    }
+    if (!setup.closes) {
+        msg.say(done, 'ok');
+    }
+}
+
+/**
+ * First setup over the access point: the first screen, in place of the
+ * tabs, sets Airfrog's password. Airfrog doesn't save a home network until
+ * it has one.
+ */
+export class FirstSetupView {
+    /** Whether the first screen is displayed in state. */
+    static shown({ connected, interface: via, hasPassword }) {
+        return connected && via === Interface.AP_FIRST_SETUP && !hasPassword;
+    }
+
+    constructor(setup) {
+        this.setup = setup;
+        this.msg = message();
+        this.form = editable(h('form', { onsubmit: (e) => { e.preventDefault(); this.form.run(() => this.save()); } },
+            h('p', {}, PASSWORD.FIRST_SETUP), ...newPasswordFields(),
+            h('div', { class: 'row' }, h('button', { class: 'primary' }, SETTINGS.SAVE)), this.msg),
+        (f) => f.elements.password.value !== '' && f.elements.repeat.value !== '');
+        this.element = card(PASSWORD.TITLE, null, this.form);
+        this.element.id = 'first-setup';
+        this.element.hidden = true;
+    }
+
+    update(state) {
+        this.element.hidden = !FirstSetupView.shown(state);
+    }
+
+    async save() {
+        const f = this.form.elements;
+        if (!showPasswordErrors(this.form, this.msg, checkNewPassword(f.password.value, f.repeat.value))) {
+            return;
         }
+        const password = f.password.value;
+        f.password.value = '';
+        f.repeat.value = '';
+        this.form.refresh();
+        await savePassword(this.setup, this.msg, password, false);
     }
 }
 

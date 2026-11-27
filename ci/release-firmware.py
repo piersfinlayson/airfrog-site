@@ -8,7 +8,9 @@ on images.airfrog.org and its key in the manifest.
 In the firmware manifest, FIRMWARE_MANIFEST:
 - airfrog-MODEL, a released model's Airfrog firmware, MODEL being the
   model's key in schema.toml: FIRMWARE_UPDATE_IMAGE, FIRMWARE_FACTORY_FILES
-  and SETUP_MODULE. The commit is commission.json's.
+  and SETUP_MODULE. The commit is commission.json's. FIRMWARE_UPDATE_IMAGE
+  must be a signed file, signed with one of commissioning/release-keys.js's
+  release keys.
 
 In the support firmware manifest, SUPPORT_FIRMWARE_MANIFEST:
 - onerom-airfrog-recovery, ONEROM_RECOVERY_FIRMWARE.
@@ -30,8 +32,9 @@ Usage: python3 ci/release-firmware.py --images DIR --signer URL --firmware NAME 
               support firmware
   --notes     the release notes' URL
 
-The signing key must be the one in commissioning/manifest-key.js. The PIN is
-read from the terminal. Use the Python ci/install-python.sh installs.
+The signing server's key must be one of commissioning/release-keys.js's
+release keys. The PIN is read from the terminal. Use the Python
+ci/install-python.sh installs.
 """
 import argparse
 import json
@@ -40,7 +43,7 @@ import os
 from releases import (
     AIRFROG_FIRMWARE, SCHEMA, add_arguments, add_release, firmware_type, load_manifest, write_manifest,
 )
-from signing import entry, fail
+from signing import entry, fail, release_signed
 from urls import path, url
 
 # Each support firmware's constant in schema.toml's [recovery_constants] and
@@ -80,11 +83,14 @@ def airfrog_release(images, model, version, notes):
         name = os.path.join(local('FIRMWARE_FACTORY_FILES'), f['file'])
         if entry(read(name)) != {'size': f['size'], 'sha256': f['sha256']}:
             fail('%s doesn\'t match %s' % (name, commission_json))
+    update = read(local('FIRMWARE_UPDATE_IMAGE'))
+    if not release_signed(update, 'firmware'):
+        fail("%s isn't signed with a release key" % local('FIRMWARE_UPDATE_IMAGE'))
     base = url('FIRMWARE_FACTORY_FILES', release=version, model=model)
     return {
         **head(version, commission['commit'], notes),
         'image': {'url': url('FIRMWARE_UPDATE_IMAGE', release=version, model=model),
-                  **entry(read(local('FIRMWARE_UPDATE_IMAGE')))},
+                  **entry(update)},
         'setup': {'url': url('SETUP_MODULE', release=version, model=model),
                   **entry(read(local('SETUP_MODULE')))},
         'flash_size': commission['flash_size'],

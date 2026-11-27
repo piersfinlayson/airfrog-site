@@ -45,8 +45,8 @@ async function withFake(fakeOptions, args) {
 test('sends the settings and prints the result', async () => {
   const { code, stdout, stderr, fake } = await withFake({ joinAfter: 1 }, [
     '--ssid', 'bench-net', '--wifi-password', 'wifi-secret', '--address', '10.0.0.9',
-    '--netmask', '255.255.255.0', '--password', 'frog', '--hostname', 'bench',
-    '--aliases', 'bench.lan', '--recovery-off', '--wifi-power-save', '--wifi-poll', '5', '--log',
+    '--netmask', '255.255.255.0', '--password', 'Frog-pond1', '--hostname', 'bench',
+    '--aliases', 'bench.lan', '--recovery', '--wifi-power-save', '--wifi-poll', '5', '--log',
   ]);
   assert.equal(code, 0, stderr);
   assert.equal(stdout, 'Hostname: bench\nURL: http://bench.local/\nWiFi: joined bench-net\n'
@@ -55,7 +55,7 @@ test('sends the settings and prints the result', async () => {
   assert.match(stderr, /airfrog: .*ESP-ROM:esp32c3/);
   assert.equal(fake.hostname, 'bench');
   assert.deepEqual(fake.aliases, ['bench.lan']);
-  assert.equal(fake.settings.flags, 2);
+  assert.equal(fake.settings.flags, 3, 'recovery and WiFi power save on');
   assert.equal(fake.wifi.ssid, 'bench-net');
   assert.ok(fake.password);
 });

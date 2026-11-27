@@ -12,16 +12,21 @@ import { espImage, serve, statuses, until } from './helpers.mjs';
 import { Session } from '../../js/setup/session.js';
 import { Command } from '../../js/setup/protocol.js';
 import {
-    checkFirmwareFile, compareVersions, describeResult, downloadFirmware, firmwareRelease, imageVersion,
-    inFirmwareManifest, keepResult, runUpdate, takeResult,
+    checkFirmwareFile, compareVersions, describeResult, downloadFirmware, firmwareRelease, imageVersion, isOlder,
+    keepResult, runUpdate, takeResult,
 } from '../../js/setup/update.js';
 import { sha256 } from '../../js/sha256.js';
 import { ReleaseError, checkFirmwareManifest, findRelease } from '../../js/setup/releases.js';
 import { hex } from '../../js/setup/bytes.js';
-import { AIRFROG_CMD } from './fake-airfrog.mjs';
+import { AIRFROG_CMD, AP_BUTTON } from './fake-airfrog.mjs';
+import { signedFile } from './minisign.mjs';
+import { readSignedFile, signatureFor } from '../../js/signed.js';
+import { BACKUP_KEY, TEST_KEY } from './minisign.mjs';
 import { IMAGE_MODEL_OFFSET, MODELS, Model } from '../../js/schema.js';
 
 const SHA = 'ab'.repeat(32);
+/** A signature, which the fake Airfrog doesn't check. */
+const SIGNED = new Uint8Array(74).fill(7);
 /** The test model that isn't released (ci/schema.py --test). */
 const UNRELEASED = Number(Object.keys(MODELS).find(n => MODELS[n].key === null));
 
@@ -95,11 +100,51 @@ test("a chosen file is checked: an ESP-IDF app image of Airfrog's project for th
     assert.deepEqual(checkFirmwareFile(espImage('0.2.1').subarray(0, IMAGE_MODEL_OFFSET + 1), Model.MINI), invalid, 'too short');
 });
 
-test("a chosen file is signed when it is a release's image in the firmware manifest", () => {
+test('a signed file: the image, zeros to 4 bytes, AFSG and the signature', () => {
     const image = espImage('0.2.1');
-    assert.ok(inFirmwareManifest(manifest(image), image));
-    assert.ok(!inFirmwareManifest(manifest(image), espImage('0.2.2')));
-    assert.ok(!inFirmwareManifest(null, image));
+    const file = signedFile(image);
+    const split = readSignedFile(file, 'firmware');
+    assert.deepEqual(split.image, image);
+    assert.equal(split.signature.length, 74);
+    assert.deepEqual([...split.signature.subarray(0, 2)], [0x45, 0x64]);
+    assert.deepEqual(readSignedFile(image, 'firmware'), { image, signature: null }, 'an unsigned file ends with the image');
+    assert.equal(readSignedFile(Uint8Array.from([...file, 0]), 'firmware'), null, 'a byte after the signature');
+    assert.equal(readSignedFile(Uint8Array.from([...image, 1]), 'firmware'), null, 'a byte after the image');
+    const badMagic = file.slice();
+    badMagic[image.length] = 0x42;
+    assert.equal(readSignedFile(badMagic, 'firmware'), null, 'another magic');
+    assert.equal(readSignedFile(image.subarray(0, 9000), 'firmware'), null, 'an image shorter than its segments');
+    const hashed = espImage('0.2.1', 10032);
+    hashed[23] = 1;
+    new DataView(hashed.buffer).setUint32(28, 10000 - 48, true);
+    assert.deepEqual(readSignedFile(hashed, 'firmware').image, hashed, 'an appended SHA-256 is part of the image');
+    const odd = espImage('0.2.1', 10000);
+    odd[1] = 2;
+    new DataView(odd.buffer).setUint32(28, 100, true);
+    new DataView(odd.buffer).setUint32(32 + 100 + 4, 10000 - 48 - 108, true);
+    assert.equal(readSignedFile(odd, 'firmware').image.length, 10000, 'two segments');
+    const padded = espImage('0.2.1', 10000).subarray(0, 9998);
+    new DataView(padded.buffer).setUint32(28, 9998 - 48 - 8, true);
+    const unaligned = readSignedFile(padded, 'firmware');
+    assert.equal(unaligned, null, 'a checksum not ending a 16-byte block');
+});
+
+test("a signature is sent only when Airfrog has its key, by key ID", () => {
+    const signature = readSignedFile(signedFile(espImage('0.2.1')), 'firmware').signature;
+    const key = (k) => Uint8Array.from(k.match(/../g), b => parseInt(b, 16));
+    assert.equal(signatureFor(signature, [key(BACKUP_KEY), key(TEST_KEY)]), signature);
+    assert.equal(signatureFor(signature, [key(BACKUP_KEY)]), null, 'signed with a key Airfrog does not have');
+    assert.equal(signatureFor(signature, []), null);
+    assert.equal(signatureFor(null, [key(TEST_KEY)]), null, 'unsigned');
+});
+
+test('firmware older than the running firmware, as Airfrog decides it', () => {
+    assert.equal(isOlder('0.2.0', '0.2.1'), true);
+    assert.equal(isOlder('0.2.1', '0.2.1'), false, 'the same version');
+    assert.equal(isOlder('0.10.0', '0.9.9'), false, 'by number');
+    assert.equal(isOlder('v0.3.0', '0.2.1'), true, "a version that isn't MAJOR.MINOR.PATCH");
+    assert.equal(isOlder(null, '0.2.1'), true);
+    assert.equal(isOlder('0.0.1', 'dev'), false, "a running version that isn't is the oldest");
 });
 
 test("a model whose name has a space: its manifest key has a hyphen", () => {
@@ -201,7 +246,12 @@ test("an update's result is kept while the page reloads", () => {
 test("the release's firmware is checked against its size and SHA-256", async () => {
     const image = espImage('0.2.1');
     const offer = firmwareRelease(manifest(image, '0.2.1', { commit: '5e6f7a8b' }), Model.MINI, '0.2.0').offer;
-    assert.deepEqual(await downloadFirmware(offer, fetchOf(image)), image);
+    const file = signedFile(image);
+    const signed = firmwareRelease(manifest(file, '0.2.1', { commit: '5e6f7a8b' }), Model.MINI, '0.2.0').offer;
+    const got = await downloadFirmware(signed, fetchOf(file));
+    assert.deepEqual([got.image, got.signature], [image, file.subarray(image.length + 4)],
+        'a signed file is split into its image and signature');
+    assert.deepEqual(await downloadFirmware(offer, fetchOf(image)), { image, signature: null });
     await assert.rejects(downloadFirmware(offer, fetchOf(image.subarray(0, image.length - 1))),
         /Firmware v0.2.1 \(5e6f7a8b\) download failed \(file corrupt\)\./);
     const other = image.slice();
@@ -228,9 +278,11 @@ test('updates, reconnects after the restart and confirms', async () => {
     const { fake, session, seen } = await connected({ maxTransfer: 4096, newVersion: [0, 2, 1] });
     const phases = [];
     const progress = [];
-    const result = await runUpdate({ session, image, version: '0.2.1', restartMs: 2000,
+    const signature = signedFile(image).subarray(image.length + 4);
+    const result = await runUpdate({ session, image, signature, version: '0.2.1', restartMs: 2000,
         onPhase: (p) => phases.push(p), onProgress: (f) => progress.push(f) });
-    assert.deepEqual(result, { running: '0.2.1', commit: '5e6f7a8b', wanted: '0.2.1', wantedCommit: '' });
+    assert.deepEqual(fake.signatures.at(-1), signature, "OTA_BEGIN contains the image's signature");
+    assert.deepEqual(result, { running: '0.2.1', commit: '5e6f7a8b', wanted: '0.2.1', wantedCommit: '', booted: true });
     assert.deepEqual(describeResult(result), { text: 'Updated to firmware v0.2.1 (5e6f7a8b).', ok: true });
     assert.deepEqual(fake.finished.data, image);
     assert.ok(fake.confirmed && !fake.waitingConfirm);
@@ -249,10 +301,10 @@ test('updates, reconnects after the restart and confirms', async () => {
 });
 
 test('firmware that returned to the previous version is reported', async () => {
-    const image = espImage('v0.2.1');
+    const image = espImage('0.2.1');
     const { session } = await connected({ newVersion: [0, 2, 1], rollback: true });
-    const result = await runUpdate({ session, image, version: 'v0.2.1', restartMs: 2000 });
-    assert.deepEqual(result, { running: '0.2.0', commit: '1a2b3c4d', wanted: '0.2.1', wantedCommit: '' });
+    const result = await runUpdate({ session, image, signature: SIGNED, version: 'v0.2.1', restartMs: 2000 });
+    assert.deepEqual(result, { running: '0.2.0', commit: '1a2b3c4d', wanted: '0.2.1', wantedCommit: '', booted: false });
     assert.deepEqual(describeResult(result),
         { ok: false, text: 'Update to firmware v0.2.1 failed. Reverted to firmware v0.2.0 (1a2b3c4d).' });
     assert.equal(describeResult({ ...result, wantedCommit: '5e6f7a8b' }).text,
@@ -270,7 +322,7 @@ test("a model's release found by version, with or without v", () => {
 
 test('OTA_BEGIN fails with UPDATE_IN_PROGRESS', async () => {
     const { fake, session } = await connected({ otaErrors: { [Command.OTA_BEGIN]: 9 } });
-    await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), version: '0.2.1' }),
+    await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), signature: SIGNED, version: '0.2.1' }),
         (e) => e.code === 'CODE' && e.detail === 9);
     assert.deepEqual(commands(fake).filter(c => c >= Command.OTA_BEGIN), [Command.OTA_BEGIN]);
     session.stop();
@@ -280,7 +332,7 @@ test("a first write that isn't an ESP-IDF image fails with IMAGE_INVALID", async
     const image = espImage('0.2.1');
     image[0] = 0;
     const { session } = await connected();
-    await assert.rejects(runUpdate({ session, image, version: '0.2.1' }), (e) => e.code === 'IMAGE_INVALID');
+    await assert.rejects(runUpdate({ session, image, signature: SIGNED, version: '0.2.1' }), (e) => e.code === 'IMAGE_INVALID');
     session.stop();
 });
 
@@ -289,7 +341,7 @@ test("another model's image sent straight to Airfrog, without the file check, fa
     for (const maxTransfer of [4096, 100]) {
         const { fake, session } = await connected({ maxTransfer });
         const image = espImage('0.2.1', 10000, { chip: 9, model: Model.PRO });
-        await assert.rejects(runUpdate({ session, image, version: '0.2.1' }),
+        await assert.rejects(runUpdate({ session, image, signature: SIGNED, version: '0.2.1' }),
             { code: 'IMAGE_INVALID', message: 'Invalid firmware file.' }, String(maxTransfer));
         assert.ok(fake.ota === null && !fake.finished, 'nothing is accepted');
         const writes = commands(fake).filter(c => c === Command.OTA_WRITE).length;
@@ -300,21 +352,21 @@ test("another model's image sent straight to Airfrog, without the file check, fa
 
 test('an image of the device\'s model is accepted in small writes', async () => {
     const { fake, session } = await connected({ maxTransfer: 100 });
-    await runUpdate({ session, image: espImage('0.2.1'), version: '0.2.1' });
+    await runUpdate({ session, image: espImage('0.2.1'), signature: SIGNED, version: '0.2.1' });
     assert.ok(fake.finished);
     session.stop();
 });
 
 test("an image shorter than its model number's offset fails at OTA_FINISH", async () => {
     const { session } = await connected();
-    await assert.rejects(runUpdate({ session, image: espImage('0.2.1').slice(0, IMAGE_MODEL_OFFSET + 1), version: '0.2.1' }),
+    await assert.rejects(runUpdate({ session, image: espImage('0.2.1').slice(0, IMAGE_MODEL_OFFSET + 1), signature: SIGNED, version: '0.2.1' }),
         (e) => e.code === 'IMAGE_INVALID');
     session.stop();
 });
 
 test("OTA_FINISH's failed check doesn't wait for a restart", async () => {
     const { fake, session, seen } = await connected({ corruptOta: true });
-    await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), version: '0.2.1', restartMs: 200 }),
+    await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), signature: SIGNED, version: '0.2.1', restartMs: 200 }),
         (e) => e.code === 'IMAGE_INVALID');
     assert.ok(!fake.closes.includes(1001));
     fake.closeAll(4006);
@@ -324,10 +376,89 @@ test("OTA_FINISH's failed check doesn't wait for a restart", async () => {
 
 test("Airfrog that doesn't reconnect after the restart", async () => {
     const { fake, session } = await connected({ restartMs: 1000 });
-    await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), version: '0.2.1', restartMs: 50,
+    await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), signature: SIGNED, version: '0.2.1', restartMs: 50,
         previous: { version: '0.2.0', commit: '1a2b3c4d' } }),
     { message: 'No response from Airfrog after restart. Airfrog will revert to firmware v0.2.0 (1a2b3c4d) '
         + 'within 2 minutes.' });
     assert.ok(fake.restarting);
     session.stop();
+});
+
+test('unsigned firmware fails with NOT_PERMITTED except over the recovery button\'s access point', async () => {
+    let { fake, session } = await connected();
+    await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), signature: null, version: '0.2.1' }),
+        { code: 'NOT_PERMITTED' });
+    assert.ok(fake.signatures.at(-1).every(b => b === 0), 'OTA_BEGIN contains 74 zero bytes');
+    session.stop();
+    ({ fake, session } = await connected({ interface: AP_BUTTON }));
+    await runUpdate({ session, image: espImage('0.2.1'), signature: null, version: '0.2.1', restartMs: 2000 });
+    assert.ok(fake.finished);
+    session.stop();
+});
+
+test('older firmware fails with NOT_PERMITTED at the write of its head', async () => {
+    const { fake, session } = await connected({ version: [0, 3, 0] });
+    await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), signature: SIGNED, version: '0.2.1' }),
+        { code: 'NOT_PERMITTED' });
+    assert.ok(!fake.finished);
+    session.stop();
+});
+
+test("a failed OTA_FINISH: the session's next connection is checked", async () => {
+    const { Airfrog } = await import('../../js/airfrog.js');
+    for (const [what, config] of [['a close other than 1001', { finishClose: 4000 }],
+        ['an ERROR', { otaErrors: { [Command.OTA_FINISH]: 16 } }]]) {
+        const { host } = serve(config);
+        const calls = [];
+        const session = new Session(host, { retryMs: 10, connect: (h, p, options) => {
+            calls.push(options);
+            return Airfrog.connect(h, p);
+        } });
+        session.start();
+        await until(() => session.airfrog);
+        await assert.rejects(runUpdate({ session, image: espImage('0.2.1'), signature: SIGNED, version: '0.2.1',
+            restartMs: 2000 }), what);
+        await until(() => session.airfrog && calls.length > 1, 3000).catch(() => {});
+        assert.ok(calls.slice(1).every(o => !o.confirming), `${what}: no connection opens unchecked (${JSON.stringify(calls)})`);
+        session.stop();
+    }
+});
+
+test('hostile segment lengths', () => {
+    const hostile = (lengths, size = 110) => {
+        const data = new Uint8Array(size);
+        data[0] = 0xE9;
+        data[1] = lengths.length;
+        let at = 24;
+        for (const n of lengths) {
+            new DataView(data.buffer).setUint32(at + 4, n, true);
+            at += 8;
+        }
+        return data;
+    };
+    // One segment of 0xFFFFFFF0 would end at 32 on 32-bit integers.
+    const wrapped = hostile([0xFFFFFFF0]);
+    wrapped.set(new TextEncoder().encode('AFSG'), 32);
+    assert.equal(readSignedFile(wrapped, 'firmware'), null, 'a length that would wrap');
+    assert.equal(readSignedFile(hostile([0x80000000]), 'firmware'), null, 'a length past 2^31');
+    assert.equal(readSignedFile(hostile([0x7FFFFFF0, 0x7FFFFFF0]), 'firmware'), null, 'lengths that add past 2^32');
+    assert.equal(readSignedFile(hostile([0xFFFFFFFF, 0]), 'firmware'), null, 'a length past the file');
+});
+
+test("the running image's SHA-256 decides: a new image that didn't boot isn't confirmed, even at the same version", async () => {
+    const { fake, session } = await connected({ rollback: true });
+    const result = await runUpdate({ session, image: espImage('0.2.0'), signature: SIGNED, version: '0.2.0',
+        restartMs: 2000 });
+    assert.equal(result.booted, false);
+    assert.equal(describeResult(result).ok, false);
+    assert.match(describeResult(result).text, /^Update to firmware v0\.2\.0 failed\. Reverted to firmware v0\.2\.0/);
+    assert.ok(!commands(fake).includes(Command.OTA_CONFIRM), 'OTA_CONFIRM is not sent');
+    session.stop();
+
+    const ok = await connected({});
+    const same = await runUpdate({ session: ok.session, image: espImage('0.2.0'), signature: SIGNED, version: '0.2.0',
+        restartMs: 2000 });
+    assert.equal(same.booted, true, 'the same version, booted');
+    assert.ok(commands(ok.fake).includes(Command.OTA_CONFIRM) && ok.fake.confirmed, 'OTA_CONFIRM is sent');
+    ok.session.stop();
 });

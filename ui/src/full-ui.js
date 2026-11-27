@@ -15,6 +15,7 @@ import { ExtensionsTab } from './extensions/tab.js';
 import { ExtensionPane } from './extensions/pane.js';
 import { Airfrog } from '../../js/airfrog.js';
 import { AirfrogError, AwpSocket } from '../../js/awp.js';
+import { checkHello } from './firmware-check.js';
 import { EXTENSIONS, PAGE } from '../../js/messages.js';
 
 /** An extension UI tab's id, which is also its URL hash. */
@@ -28,24 +29,28 @@ export class FullUi {
      * @param {object} options.setup - Airfrog's internal JS setup module, as Airfrog serves it
      * @param {object|null} [options.firmware] - the verified firmware manifest
      * @param {string|null} [options.firmwareError] - why there isn't one
-     * @param {function(): Promise<object>} [options.loadFirmware] - loads the
-     *        firmware manifest to check a chosen firmware file
      * @param {function(): Promise<{url: string, manifest: object}>} options.loadExtensions -
      *        loads and verifies the extensions manifest
      * @param {string|null} options.extensionsUrl - the extensions manifest's
      *        address, or null when the Airfrog manifest didn't load
+     * @param {function(): Array<string>} [options.fullAccess] - the
+     *        Airfrog manifest's full_access_websites, empty until it loads
      * @param {object} [options.session]
      * @param {string} [options.version] - this full user interface's version
      */
-    constructor({ setup, firmware = null, firmwareError = null, loadFirmware = null,
-        loadExtensions, extensionsUrl, session, version }) {
+    constructor({ setup, firmware = null, firmwareError = null,
+        loadExtensions, extensionsUrl, fullAccess = () => [], session, version }) {
         // The password the session's open connection logged in with opens
         // each extension UI's connection. It is forgotten when that
         // connection closes, so a changed password isn't tried until the
         // session logs in again.
         this.login = null;
-        session ??= new setup.Session(location.host, { connect: async (host, password) => {
-            const airfrog = await Airfrog.connect(host, password);
+        this.fullAccess = fullAccess;
+        // The reconnect after an install isn't checked, so firmware with
+        // another manifest address or other release keys is confirmed.
+        // Every other connection is.
+        session ??= new setup.Session(location.host, { connect: async (host, password, { confirming = false } = {}) => {
+            const airfrog = await Airfrog.connect(host, password, confirming ? {} : { checkHello });
             this.login = { host, password, airfrog };
             airfrog.addEventListener('close', () => {
                 if (this.login?.airfrog === airfrog) {
@@ -53,12 +58,12 @@ export class FullUi {
                 }
             });
             return airfrog;
-        } });
+        }, resetPassword: (host, password) => Airfrog.resetPassword(host, password, { checkHello }) });
         this.targetCard = new TargetCard(this);
         this.targetView = new TargetView();
         this.pinsView = new PinsView();
         this.page = new setup.Page({
-            firmware, firmwareError, loadFirmware, session,
+            firmware, firmwareError, session,
             tabs: [{ id: 'target', name: PAGE.TARGET_TAB, element: h('div', {}, this.targetCard.element) }],
             advanced: [this.targetView.element, this.pinsView.element],
             recordTab: true,
@@ -171,7 +176,7 @@ export class FullUi {
                 this.page.tabButtons[id].textContent = x.displayName;
             } else {
                 pane = new ExtensionPane({ name: x.name, displayName: x.displayName, ui: x.ui,
-                    open: () => this.#openSocket() });
+                    open: () => this.#openSocket(), fullAccess: this.fullAccess });
                 this.extensionPanes.set(x.name, pane);
                 this.#addTab(id, x.displayName, pane.element, 'target');
             }
@@ -186,7 +191,7 @@ export class FullUi {
         if (!this.login || this.login.airfrog.isClosed()) {
             return Promise.reject(new AirfrogError('CLOSED'));
         }
-        return AwpSocket.open(this.login.host, this.login.password);
+        return AwpSocket.open(this.login.host, this.login.password, { checkHello });
     }
 
     get session() {

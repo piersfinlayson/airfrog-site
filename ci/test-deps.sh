@@ -8,10 +8,11 @@
 #   ci/build-setup.sh builds it, with schema/js/schema.js in place of
 #   js/schema.js
 # - ui/ui.js: Airfrog's full user interface built by ui/build.mjs with
-#   ui/manifest-key.js in place of commissioning/manifest-key.js and
-#   schema/js/schema.js in place of js/schema.js. ui/manifest-key.js
-#   contains the public half of airfrog-v2's test key, test/keys/manifest.pem.
-#   ci/build-ui.sh runs first and installs esbuild and noble.
+#   schema/js/schema.js in place of js/schema.js, and AIRFROG_MANIFEST and
+#   AIRFROG_KEYS set to ui/release-keys.js's. ui/release-keys.js contains
+#   https://manifest.test/manifest.json and the public halves of the test
+#   keys 'release' and 'backup' (tests/ui/minisign.mjs). ci/build-ui.sh runs
+#   first and installs esbuild and noble.
 #
 # Usage: ci/test-deps.sh
 set -euo pipefail
@@ -38,18 +39,20 @@ cp "${OUT}/schema/js/schema.js" "${OUT}/setup-src/js/schema.js"
     "--banner:js=// Airfrog's internal JS setup module with the test models, built by ci/test-deps.sh." \
     --outfile="${OUT}/setup/setup.js"
 
-# The full user interface with the test key and the test models
+# The full user interface with the test keys and the test models
 mkdir -p "${OUT}/ui"
-key="$(node --input-type=module -e "import { TEST_KEY } from '${ROOT}/tests/ui/minisign.mjs'; console.log(TEST_KEY);")"
-printf "// Written by ci/test-deps.sh with airfrog-v2's test key.\nexport const MANIFEST_KEY = '%s';\nexport const AIRFROG_MANIFEST = '%s';\n" \
-    "${key}" "https://manifest.test/manifest.json" > "${OUT}/ui/manifest-key.js"
-node "${ROOT}/ui/build.mjs" \
+manifest="https://manifest.test/manifest.json"
+keys="$(node --input-type=module -e "import { TEST_KEY, BACKUP_KEY } from '${ROOT}/tests/ui/minisign.mjs'; console.log([TEST_KEY, BACKUP_KEY].join());")"
+node --input-type=module -e "console.log('// Written by ci/test-deps.sh with the test keys.\\n'
+    + 'export const RELEASE_KEYS = ' + JSON.stringify(process.argv[1].split(',')) + ';\\n'
+    + 'export const AIRFROG_MANIFEST = ' + JSON.stringify(process.argv[2]) + ';')" "${keys}" "${manifest}" \
+    > "${OUT}/ui/release-keys.js"
+AIRFROG_MANIFEST="${manifest}" AIRFROG_KEYS="${keys}" node "${ROOT}/ui/build.mjs" \
     --esbuild "${ROOT}/build/ui-deps/esbuild-${ESBUILD}/node_modules/esbuild/lib/main.js" \
     --node-modules "${ROOT}/build/ui-deps/noble/node_modules" \
-    --manifest-key "${OUT}/ui/manifest-key.js" \
     --schema "${OUT}/schema/js/schema.js" \
     --ui-version "$(tr -d '[:space:]' < "${ROOT}/ui/ui-version")" \
-    --banner "// Airfrog's full user interface with airfrog-v2's test key and the test models, built by ci/test-deps.sh." \
+    --banner "// Airfrog's full user interface with the test keys and the test models, built by ci/test-deps.sh." \
     --out "${OUT}/ui/ui.js"
 
 echo "Wrote ${OUT}" >&2

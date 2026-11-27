@@ -88,13 +88,15 @@ export const NETWORKS = [
 //                 Infinity
 //   scanFails     a scan ends with state 3
 //   networks      the networks a scan finds
+//   noSha256      GET_FW_INFO without the running image's SHA-256, as before
+//                 it was added, for an old setup module
 export class FakeAirfrog {
   hellos = 0;
   commands = [];
   hostname = 'airfrog';
   aliases = [];
   websites = [];
-  settings = { board: 0, bootWindowMs: 0xffff, changeCheckMs: 1000, flags: 1, wifiRescanS: 3600, wifiRescanDb: 10 };
+  settings = { board: 0, bootWindowMs: 0xffff, changeCheckMs: 1000, flags: 0, wifiRescanS: 3600, wifiRescanDb: 10 };
   password = null;
   // { mode, ipv4, ssid, password }. ipv4 is SET_WIFI_STA's 16 bytes of
   // addresses.
@@ -103,11 +105,11 @@ export class FakeAirfrog {
   scan = { state: 0, polls: 0 };
 
   constructor({ readable, writable }, {
-    ignoreHellos = 0, errors = {}, silent = [], joinAfter = 0, failReason = 0, iterations = 1000, helloDelay = 0,
-    chunk = 0, saved = {}, scanPolls = 2, scanFails = false, networks = NETWORKS,
+    ignoreHellos = 0, errors = {}, silent = [], joinAfter = 0, failReason = 0, iterations = 100000, helloDelay = 0,
+    chunk = 0, saved = {}, scanPolls = 2, scanFails = false, networks = NETWORKS, noSha256 = false,
   } = {}) {
     this.options = { ignoreHellos, errors, silent, joinAfter, failReason, iterations, helloDelay, chunk, scanPolls,
-                     scanFails, networks };
+                     scanFails, networks, noSha256 };
     Object.assign(this, structuredClone(saved));
     this.writer = writable.getWriter();
     this.running = this.#run(readable.getReader());
@@ -176,14 +178,18 @@ export class FakeAirfrog {
     return this.#write(encodeLine(type, payload, HEADER_RESPONSE));
   }
 
+  // HELLO over serial: interface 1, one release key and the manifest address.
   #hello() {
-    const p = new Uint8Array(44);
+    const p = new Uint8Array(80);
     p.set(le16(1), 0);
     p.set(le16(this.password ? 1 : 0), 2);
     p.set(le32(4096), 4);
     if (this.password) p.set(this.password.salt, 24);
     p.set(le32(this.options.iterations), 40);
-    return p;
+    p.set(le16(1), 44);
+    p.set(le16(1), 46);
+    p.fill(0x11, 48, 80);
+    return concat(p, textField('https://manifest.test/manifest.json'));
   }
 
   // Returns the response's fields, an error code, or null for a request
@@ -195,7 +201,8 @@ export class FakeAirfrog {
         return f.length ? null : concat(le16(5), new Uint8Array([0, 4]), le32(4 << 20), le32(0),
           new Uint8Array([0x24, 0x0a, 0xc4, 1, 2, 3]), le16(1), utf8.encode('4146240AC4010203'));
       case GET_FW_INFO:
-        return f.length ? null : concat(new Uint8Array([0, 2, 0, 0]), le16(1), le16(0), new Uint8Array(4), textField(''));
+        return f.length ? null : concat(new Uint8Array([0, 2, 0, 0]), le16(1), le16(0), new Uint8Array(4),
+          new Uint8Array(this.options.noSha256 ? 0 : 32).fill(0x5a), textField(''));
       case GET_WIFI_AP:
         return f.length ? null : concat(le16(0), le16(0), new Uint8Array(20), textField('airfrog-0203'));
       case GET_PIN_MAP:

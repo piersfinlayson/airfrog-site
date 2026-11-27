@@ -4,17 +4,23 @@
 
 // A page on onerom.org programs a target through Airfrog's window in
 // headless Chrome, against QEMU Airfrog offering PICOBOOT_RP2350_SWD, without
-// and with a password.
+// and with a password. Then Airfrog's own page, served as over the access
+// point, doesn't open as the bridge window, and onerom.org displays why.
 //
 // Usage: node tests/js/chrome/bridge-qemu.test.mjs ADDRESS:PORT
 //   ADDRESS:PORT  QEMU Airfrog (ci/qemu.sh --serve), for example
 //                 127.0.0.1:18080. Its host aliases are set to 127.0.0.1 and
 //                 its password is cleared at the end.
+//   BRIDGE_PORT   the port that stands in for Airfrog's home page (default
+//                 18190). BRIDGE_PORT + 1 relays Airfrog's own page, marked
+//                 as over the access point with /qemu-ap?page=1
 
 import { execFileSync } from 'node:child_process';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { start } from './harness.mjs';
+import { BRIDGE, HOME_PAGE } from '../../../js/messages.js';
 
 const airfrog = process.argv[2];
 const ADMIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'airfrog_admin.py');
@@ -27,7 +33,7 @@ const check = (ok, what) => {
 };
 
 admin('airfrog', '-', 'set-aliases', '127.0.0.1');
-const browser = await start({ airfrog });
+const browser = await start({ airfrog, bridgePort: Number(process.env.BRIDGE_PORT ?? 18190) });
 const { cdp, bridgeHost } = browser;
 const BRIDGE_PAGE = `http://${bridgeHost}/`;
 
@@ -112,6 +118,41 @@ try {
     check(changed === `${bridgeHost}'s password was changed.`, `a password change reaches the page (${changed})`);
     admin('127.0.0.1', 'toadpass', 'clear-password');
     await wrong.eval('window.close(); true').catch(() => {});
+
+    // Over the access point Airfrog's page doesn't load the bridge window and reports ACCESS_POINT to onerom.org.
+    const [address, port] = airfrog.split(':');
+    const apPort = Number(process.env.BRIDGE_PORT ?? 18190) + 1;
+    const apHost = `127.0.0.1:${apPort}`;
+    const qemu = (route) => new Promise((resolve) => {
+        http.get({ host: address, port: Number(port), path: route }, (r) => { r.resume(); r.on('end', resolve); })
+            .on('error', resolve);
+    });
+    const apPage = http.createServer(async (req, res) => {
+        if (req.url.split('?')[0] === '/') {
+            await qemu('/qemu-ap?page=1');
+        }
+        const upstream = http.request({ host: address, port: Number(port), method: req.method, path: req.url,
+            headers: req.headers }, (r) => {
+            res.writeHead(r.statusCode, r.headers);
+            r.pipe(res);
+        });
+        upstream.on('error', () => { res.writeHead(502); res.end(); });
+        req.pipe(upstream);
+    });
+    await new Promise(r => apPage.listen(apPort, '127.0.0.1', r));
+    try {
+        const popup = cdp.popup(`http://${apHost}/`);
+        await site.eval(`test.connect('${apHost}')`, true);
+        const apWindow = await popup;
+        const failed = await site.until('window.connecting.then(v => v)', 15000);
+        check(failed === `ACCESS_POINT: ${BRIDGE.ON_AP('onerom.org', apHost)}`,
+            `over the access point onerom.org displays why (${failed})`);
+        const shown = await apWindow.until(`document.getElementById('loading')?.textContent`, 5000).catch(() => null);
+        check(shown === HOME_PAGE.ACCESS_POINT, `and Airfrog's window displays the access point's notice (${shown})`);
+    } finally {
+        apPage.close();
+        apPage.closeAllConnections?.();
+    }
 
     const errors = [...site.console, ...bridge.console, ...wrong.console].filter(l => /EXCEPTION/.test(l));
     check(errors.length === 0, `no exceptions ${errors.join('; ')}`);

@@ -8,8 +8,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { serve, statuses, until } from './helpers.mjs';
+import { AP_BUTTON, STATION } from './fake-airfrog.mjs';
 import { Session } from '../../js/setup/session.js';
 import { Command, EMPTY } from '../../js/setup/protocol.js';
+import { CONNECTION, ERRORS } from '../../js/messages.js';
 import { pbkdf2HmacSha256 } from '../../js/sha256.js';
 
 const last = (seen) => seen.at(-1);
@@ -150,5 +152,108 @@ test("an expected reconnect is marked expected, and keeps its message while Airf
     fake.closeAll(4006);
     await until(() => last(seen).state === 'waiting');
     assert.equal(last(seen).expected, false, 'a close the page didn\'t expect');
+    session.stop();
+});
+
+test("Airfrog's iterations below MIN_ITERATIONS: failed, without retrying", async () => {
+    const { fake, host } = serve({ password: 'frog', iterations: 99999 });
+    const session = new Session(host, { retryMs: 10 });
+    const seen = statuses(session);
+    session.start();
+    await until(() => last(seen)?.state === 'failed');
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(last(seen).state, 'failed');
+    assert.equal(last(seen).message, ERRORS.ITERATIONS_TOO_LOW(99999));
+    assert.equal(seen.filter(s => s.state === 'connecting').length, 1, 'no further attempt');
+    assert.ok(!fake.received.length, 'nothing is sent');
+    session.stop();
+});
+
+test("a connect() whose HELLO check fails with OTHER_FIRMWARE: failed, without retrying", async () => {
+    const { host } = serve();
+    const { Airfrog, AirfrogError } = await import('../../js/airfrog.js');
+    const session = new Session(host, { retryMs: 10, connect: (h, p) => Airfrog.connect(h, p,
+        { checkHello: () => new AirfrogError('OTHER_FIRMWARE', null, 'Other firmware.') }) });
+    const seen = statuses(session);
+    session.start();
+    await until(() => last(seen)?.state === 'failed');
+    assert.equal(last(seen).message, 'Other firmware.');
+    session.stop();
+});
+
+test("over the recovery button's access point a forgotten password is replaced, then the login card asks for it", async () => {
+    const { fake, host } = serve({ password: 'frog', interface: AP_BUTTON });
+    const session = new Session(host, { retryMs: 10 });
+    const seen = statuses(session);
+    session.start();
+    await until(() => last(seen)?.state === 'password');
+    assert.equal(last(seen).via, AP_BUTTON, "the password state contains HELLO's interface");
+    session.resetPassword('Newt2026x');
+    await until(() => last(seen)?.state === 'password' && last(seen).message);
+    assert.deepEqual(last(seen), { state: 'password', message: CONNECTION.PASSWORD_SAVED, expected: true, via: AP_BUTTON });
+    assert.deepEqual([...fake.key], [...pbkdf2HmacSha256(new TextEncoder().encode('Newt2026x'), fake.salt, 100000)],
+        'SET_PASSWORD before LOGIN, its key in the clear');
+    assert.ok(seen.some(s => s.state === 'connecting' && s.message === 'Saving…'));
+    assert.ok(!seen.some(s => s.state === 'connected'), "the page doesn't log in by itself");
+    session.login('Newt2026x');
+    await until(connected(seen));
+    assert.equal(session.hasPassword, true);
+    session.stop();
+});
+
+test("expectClose()'s loginNote: the next connection doesn't log in, and the login card displays the note", async () => {
+    const { fake, host } = serve();
+    const session = new Session(host, { retryMs: 10 });
+    const seen = statuses(session);
+    session.start();
+    await until(connected(seen));
+    session.expectClose({ message: 'Password set. Reconnecting…', password: null, loginNote: CONNECTION.PASSWORD_SAVED });
+    await session.airfrog.setPassword('Newt2026x');
+    await until(() => last(seen)?.state === 'password');
+    assert.equal(last(seen).message, CONNECTION.PASSWORD_SAVED);
+    assert.equal(last(seen).expected, true);
+    assert.ok(seen.some(s => s.state === 'waiting' && s.message === 'Password set. Reconnecting…'));
+    session.login('Newt2026x');
+    await until(connected(seen));
+    assert.ok(fake.key);
+    session.stop();
+});
+
+test('replacing a password over another connection fails with NOT_PERMITTED on the login form', async () => {
+    const { host } = serve({ password: 'frog' });
+    const session = new Session(host, { retryMs: 10 });
+    const seen = statuses(session);
+    session.start();
+    await until(() => last(seen)?.state === 'password');
+    assert.equal(last(seen).via, STATION);
+    session.resetPassword('Newt2026x');
+    await until(() => last(seen)?.state === 'password' && last(seen).message);
+    assert.equal(last(seen).message, ERRORS.NOT_PERMITTED());
+    session.stop();
+});
+
+test('the reconnect after an install opens with confirming, and endConfirming() closes it', async () => {
+    const { fake, host } = serve();
+    const { Airfrog } = await import('../../js/airfrog.js');
+    const calls = [];
+    const session = new Session(host, { retryMs: 10, connect: (h, p, options) => {
+        calls.push(options);
+        return Airfrog.connect(h, p);
+    } });
+    const seen = statuses(session);
+    session.start();
+    await until(connected(seen));
+    assert.deepEqual(calls, [{ confirming: false }]);
+    const next = session.nextConnection(2000);
+    session.expectClose({ message: 'Restarting', confirm: true });
+    fake.closeAll(1001);
+    const after = await next;
+    assert.deepEqual(calls.at(-1), { confirming: true }, 'the reconnect opens with confirming');
+    const again = session.nextConnection(2000);
+    session.endConfirming();
+    assert.ok(after.isClosed(), 'endConfirming() closes it');
+    await again;
+    assert.deepEqual(calls.at(-1), { confirming: false }, 'the next connection opens without confirming');
+    assert.ok(seen.some(s => s.message === 'Reconnecting…' && s.expected), 'its close is expected');
     session.stop();
 });

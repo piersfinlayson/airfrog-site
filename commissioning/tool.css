@@ -92,6 +92,8 @@
 .tool .actions + .msg { margin-top: 10px; }
 .tool .msg a { color: var(--link); }
 .tool .note { color: var(--muted); font-size: 14px; margin: 0; }
+.tool .rule ul { margin: 2px 0 0; padding-left: 20px; }
+.tool .rule-intro.bad { color: var(--bad); }
 .tool .content[inert] { opacity: 0.45; }
 .tool progress { width: 100%; max-width: 420px; height: 10px; accent-color: var(--accent); }
 .tool pre.log { margin: 8px 0 0; max-height: 320px; overflow: auto; padding: 8px 10px; background: var(--card);

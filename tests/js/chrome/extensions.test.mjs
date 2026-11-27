@@ -145,7 +145,7 @@ const frameText = `document.getElementById('log').innerText`;
 
 try {
     const params = new URLSearchParams({ extensions: `${REPO}/extensions/manifest.json`,
-        installed: `${REPO}/extensions/hello/0.1.0/wamr-0.0.0/model-0.bin`, module: 'local-test' });
+        installed: `${REPO}/extensions/hello/0.1.0/wamr-0.0.0/model-0.bin`, module: 'local-test', via: '4' });
     const ui = await cdp.open(`${PAGE}?${params}`);
     await ui.call('Emulation.setDeviceMetricsOverride', { width: 900, height: 800, deviceScaleFactor: 1, mobile: false });
     await ui.until(`(c => c && !c.hidden && !c.inert)(document.querySelector('.content'))
@@ -301,20 +301,20 @@ try {
 
     // Install from file
     const { root } = await ui.call('DOM.getDocument', { depth: 0 });
-    const { nodeId } = await ui.call('DOM.querySelector', { nodeId: root.nodeId, selector: 'input[accept=".afx"]' });
+    const { nodeId } = await ui.call('DOM.querySelector', { nodeId: root.nodeId, selector: 'input[accept=".afx,.bin"]' });
     await ui.call('DOM.setFileInputFiles', { nodeId, files: [path.join(out, 'packages', 'one-rom-test-1.0.0.afx')] });
     await ui.until(`${prompt}`, 5000);
     check(await ui.eval(`${prompt}.innerText`)
-        === 'Extensions added from a file have full access to Airfrog.\nInstall\nCancel',
-    `the side-load confirmation (${JSON.stringify(await ui.eval(`${prompt}.innerText`))})`);
+        === 'Unsigned extensions have full access to Airfrog.\nInstall\nCancel',
+    `the unsigned extension confirmation (${JSON.stringify(await ui.eval(`${prompt}.innerText`))})`);
     check(await ui.eval(`document.activeElement.textContent`) === 'Cancel', 'Cancel has the focus');
-    await shot(ui, 'side-load-confirm');
+    await shot(ui, 'unsigned-confirm');
     await ui.eval(click('Install', prompt));
     await ui.until(`/Installed One Rom Test v1\\.0\\.0\\./.test(${msg})`, 10000);
-    check((await ui.eval(rows)).includes('One Rom Test|v1.0.0 from file|UI only|true|Open+Remove'),
-        `an extension installed from a file is marked from file, without Update (${await ui.eval(rows)})`);
-    check(/one-rom-test:3:1\.0\.0/.test(await ui.eval(fakeList)), 'installed with SIDE_LOADED and TAB');
-    await shot(ui, 'extensions-side-loaded');
+    check((await ui.eval(rows)).includes('One Rom Test|v1.0.0 unsigned|UI only|true|Open+Remove'),
+        `an extension installed from a file is marked unsigned, without Update (${await ui.eval(rows)})`);
+    check(/one-rom-test:3:1\.0\.0/.test(await ui.eval(fakeList)), 'installed with UNSIGNED and TAB');
+    await shot(ui, 'extensions-unsigned');
 
     // Remove
     await ui.eval(rowClick('Local Test', 'Remove'));
@@ -363,14 +363,15 @@ try {
 
     // Install from file with the packages airfrog-ext writes: hello has no
     // module, watchdog has images for models 1 and 2.
-    const files = await cdp.open(`${PAGE}?${new URLSearchParams({ extensions: `${REPO}/extensions/manifest.json` })}`);
+    const files = await cdp.open(`${PAGE}?${new URLSearchParams({ extensions: `${REPO}/extensions/manifest.json`,
+        via: '4' })}`);
     await files.until(`document.querySelector('nav button')`, 15000);
     await files.eval(`window.fake.config.wamr = [2, 4, 5]; delete ReadableStream.prototype[Symbol.asyncIterator]; true`);
     await files.eval(click('Extensions'));
-    await files.until(`document.querySelector('input[accept=".afx"]')`, 5000);
+    await files.until(`document.querySelector('input[accept=".afx,.bin"]')`, 5000);
     for (const [file, installedAs] of [['hello-0.3.0.afx', 'hello:3:0.3.0'], ['watchdog-1.0.0.afx', 'watchdog:3:1.0.0']]) {
         const doc = await files.call('DOM.getDocument', { depth: 0 });
-        const input = await files.call('DOM.querySelector', { nodeId: doc.root.nodeId, selector: 'input[accept=".afx"]' });
+        const input = await files.call('DOM.querySelector', { nodeId: doc.root.nodeId, selector: 'input[accept=".afx,.bin"]' });
         await files.until(`!document.querySelector('.actions button:disabled')`, 5000);
         await files.call('DOM.setFileInputFiles', { nodeId: input.nodeId, files: [path.join(ROOT, 'tests/ui/fixtures', file)] });
         await files.until(`${prompt} || /failed/.test(${msg})`, 5000);

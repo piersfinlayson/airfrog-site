@@ -13,7 +13,7 @@
 // setup with ?fallback=REASON, against the fake Airfrog on a fake WebSocket.
 // tests/ui/browser/serve.mjs serves it.
 import { FakeAirfrog, FakeWebSocket, TARGETS } from '../fake-airfrog.mjs';
-import { AIRFROG_MANIFEST } from '../../../build/test-deps/ui/manifest-key.js';
+import { AIRFROG_MANIFEST, RELEASE_KEYS } from '../../../build/test-deps/ui/release-keys.js';
 import { sha256 } from '../../../js/sha256.js';
 import { IMAGE_MODEL_OFFSET, Model } from '../../../js/schema.js';
 
@@ -24,6 +24,9 @@ const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''
 // An ESP-IDF app image of firmware 0.2.1, as the firmware manifest's latest release
 const image = new Uint8Array(20000).map((_, i) => (i * 13) & 0xff);
 image[0] = 0xE9;
+image[1] = 1;
+image[23] = 0;
+new DataView(image.buffer).setUint32(28, image.length - 48, true);
 new DataView(image.buffer).setUint32(32, 0xABCD5432, true);
 image.fill(0, 48, 112);
 image.set(new TextEncoder().encode('0.2.1'), 48);
@@ -31,8 +34,17 @@ image.set(new TextEncoder().encode('airfrog'), 80);
 new DataView(image.buffer).setUint16(IMAGE_MODEL_OFFSET, Model.MINI, true);
 const firmwareUrl = 'https://site.test/releases/v0.2.1/airfrog-mini.bin';
 const realFetch = window.fetch;
+// The release's signed file, signed by serve.mjs with the test key
+const signedImage = new Uint8Array(await (await realFetch('/sign-file', { method: 'POST', body: image })).arrayBuffer());
 
 const fake = new FakeAirfrog({
+    keys: (params.get('keys') ?? RELEASE_KEYS.join()).split(','),
+    ...(params.has('newkeys') ? { newKeys: params.get('newkeys').split(',') } : {}),
+    ...(params.has('newmanifest') ? { newManifest: params.get('newmanifest') } : {}),
+    manifestUrl: params.get('manifest') ?? AIRFROG_MANIFEST,
+    interface: Number(params.get('via') ?? 0),
+    ...(params.has('recovery') ? { settings: { board: 0, bootWindowMs: 0xFFFF, changeCheckMs: 1000, flags: 1,
+        wifiRescanS: 3600, wifiRescanDb: 10 } } : {}),
     password: params.get('password'),
     target: TARGETS[params.get('target') ?? 'running'],
     aliases: ['airfrog.home.lan'],
@@ -63,7 +75,7 @@ window.fake = fake;
 
 const latest = params.has('latest');
 const SHA = 'ab'.repeat(32);
-const mini = { url: firmwareUrl, size: image.length, sha256: hex(sha256(image)) };
+const mini = { url: firmwareUrl, size: signedImage.length, sha256: hex(sha256(signedImage)) };
 const firmware = {
     type: 'firmware', version: 1, latest: { 'airfrog-mini': latest ? '0.2.0' : '0.2.1' },
     firmware: {
@@ -87,10 +99,13 @@ const releases = { firmware: served, firmwareError: null };
 const firmwareManifest = 'https://site.test/firmware/manifest.json';
 const noExtensions = 'https://extensions.test/manifest.json';
 const manifests = new Map([
-    [AIRFROG_MANIFEST, { type: 'airfrog', version: 1, ui_manifest: 'https://site.test/ui/manifest.json',
-        firmware_manifest: firmwareManifest, support_firmware_manifest: 'https://site.test/support-firmware/manifest.json',
-        cli_manifest: 'https://site.test/cli/manifest.json', extensions_manifest: params.get('extensions') ?? noExtensions,
-        js_library: 'https://site.test/js/' }],
+    [AIRFROG_MANIFEST, { type: 'airfrog', version: 1, ui_manifest: { url: 'https://site.test/ui/manifest.json' },
+        firmware_manifest: { url: firmwareManifest, key: RELEASE_KEYS[0] },
+        support_firmware_manifest: { url: 'https://site.test/support-firmware/manifest.json' },
+        cli_manifest: { url: 'https://site.test/cli/manifest.json' },
+        extensions_manifest: { url: params.get('extensions') ?? noExtensions, key: RELEASE_KEYS[0] },
+        js_library: 'https://site.test/js/',
+        full_access_websites: params.get('fullaccess')?.split(',') ?? ['https://airfrog.org'] }],
     [firmwareManifest, served],
     [noExtensions, { type: 'extensions', version: 1, extensions: {} }],
 ]);
@@ -103,7 +118,7 @@ window.fetch = async (url, ...rest) => {
     window.fetched.push(address);
     const m = manifests.get(address.replace(/\.minisig$/, ''));
     if (url === firmwareUrl) {
-        return new Response(image);
+        return new Response(signedImage);
     } else if (!m) {
         return realFetch(url, ...rest);
     } else if (!address.endsWith('.minisig')) {
@@ -113,17 +128,11 @@ window.fetch = async (url, ...rest) => {
     return new Response(await sign(encode(params.has('fwerror') && m === served ? { ...m, version: 0 } : m)));
 };
 
-// Loads the firmware manifest, as Airfrog's home page does, counting each load.
-window.firmwareLoads = 0;
-const loadFirmware = async () => {
-    window.firmwareLoads++;
-    return firmware;
-};
 if (params.has('fallback')) {
     // As Airfrog's home page, the manifest only on System.
     const setup = await import('/setup.js');
     const tab = params.get('tab');
-    setup.localPage({ reason: params.get('fallback'), tab, ...(tab === 'system' ? releases : {}), loadFirmware });
+    setup.localPage({ reason: params.get('fallback'), tab, ...(tab === 'system' ? releases : {}) });
 } else {
     const ui = await import(URL.createObjectURL(new Blob([await get('/build/test-deps/ui/ui.js')],
         { type: 'text/javascript' })));

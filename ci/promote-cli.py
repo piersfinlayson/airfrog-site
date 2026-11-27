@@ -15,8 +15,9 @@ Usage: python3 ci/promote-cli.py --images DIR --signer URL --version VERSION [--
   --remove   removes each --arch from the latest releases. Its releases remain
              listed
 
-The signing key must be the one in commissioning/manifest-key.js. The PIN is
-read from the terminal. Use the Python ci/install-python.sh installs.
+The signing server's key must be one of commissioning/release-keys.js's
+release keys. The PIN is read from the terminal. Use the Python
+ci/install-python.sh installs.
 """
 import argparse
 

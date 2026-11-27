@@ -16,18 +16,20 @@ import {
     EXT_NOTIFY, HEADER_RESPONSE, HELLO, Hello, IDENTIFY, AIRFROG_CMD, RELEASE, TARGET, TARGET_CMD, TargetInfo,
     errorFromBridge, errorFromPayload, hex, isKnown, passwordKey, siteName,
 } from './awp.js';
+import { readSignedFile, signatureFor } from './signed.js';
 import {
-    Command, ExtensionFlag, Firmware, IdentifyFlag, IdentifyResult, MAX_TRANSFER_MIN, Operation, PIN_NAME_LEN, PinLevel,
-    SALT_LEN, Service, SetExtensionFlag, WasmReason, WasmState, decodeExtCmd, decodeExtensions, decodeIdentifyResponse,
-    encodeAirfrogCmd, encodeExtBegin, encodeExtCmd, encodeExtensionName, encodeIdentify, encodeOtaWrite,
-    encodeResetPins, encodeSetExtensions, encodeSetPassword, encodeTargetCmd,
+    Command, ExtensionFlag, Firmware, IdentifyFlag, IdentifyResult, Interface, MAX_TRANSFER_MIN, Operation,
+    PASSWORD_LABEL, PIN_NAME_LEN, PinLevel, SALT_LEN, SIGNATURE_LEN, Service, SetExtensionFlag, WasmReason, WasmState,
+    decodeExtCmd, decodeExtensions, decodeIdentifyResponse, decodeWifiAp, encodeAirfrogCmd, encodeExtBegin,
+    encodeExtCmd, encodeExtensionName, encodeIdentify, encodeOtaWrite, encodeResetPins, encodeSetExtensions,
+    encodeSetPassword, encodeSetWifiAp, encodeTargetCmd,
 } from './schema.js';
 import { BRIDGE, CONNECTION, ERRORS, EXTENSIONS } from './messages.js';
-import { sha256 } from './sha256.js';
+import { hmacSha256, sha256 } from './sha256.js';
 
 export {
-    AirfrogError, ExtensionFlag, Firmware, IdentifyFlag, IdentifyResult, Operation, PinLevel, Service, SetExtensionFlag,
-    TargetInfo, WasmReason, WasmState,
+    AirfrogError, ExtensionFlag, Firmware, IdentifyFlag, IdentifyResult, Interface, Operation, PinLevel, Service,
+    SetExtensionFlag, TargetInfo, WasmReason, WasmState, readSignedFile, signatureFor,
 };
 
 /** The limit on IDENTIFY, which runs identification. */
@@ -43,6 +45,9 @@ const EXT_WRITE_TIMEOUT_MS = 10000;
 const EXT_FINISH_TIMEOUT_MS = 30000;
 
 const EMPTY = new Uint8Array(0);
+
+/** The signature of an unsigned image in EXT_BEGIN and OTA_BEGIN. */
+const UNSIGNED = new Uint8Array(SIGNATURE_LEN);
 
 /** How often a page checks whether the bridge window is closed. */
 const WINDOW_POLL_MS = 500;
@@ -117,6 +122,11 @@ class BridgePipe {
             return;
         }
         this.heard = true;
+        if (message.close?.code === 'ACCESS_POINT') {
+            this.ended(new AirfrogError('ACCESS_POINT', null,
+                BRIDGE.ON_AP(siteName(location.origin), new URL(this.origin).host)));
+            return;
+        }
         if (message.close) {
             this.ended(errorFromBridge(message.close));
             return;
@@ -411,13 +421,48 @@ export class Airfrog extends EventTarget {
      * @param {string|null} [password] - ignored when Airfrog doesn't have
      *        one. Without one, where Airfrog has one, the connection closes
      *        with PASSWORD_REQUIRED
+     * @param {object} [options]
+     * @param {function(Hello): AirfrogError|null} [options.checkHello] -
+     *        called with HELLO before logging in. An error it returns closes
+     *        the connection and rejects with it
      * @returns {Promise<Airfrog>}
      */
-    static async connect(host, password = null) {
-        const socket = await AwpSocket.open(host, password);
+    static async connect(host, password = null, { checkHello = null } = {}) {
+        const socket = await AwpSocket.open(host, password, { checkHello });
         const airfrog = new Airfrog(host, socket.hello, socket);
         await airfrog.#firstTarget();
         return airfrog;
+    }
+
+    /**
+     * Replaces Airfrog's password without logging in, with AIRFROG_CMD
+     * SET_PASSWORD sent before LOGIN. Airfrog allows it only over the access
+     * point started with the recovery button, and otherwise fails it with
+     * NOT_PERMITTED. Airfrog then closes every connection with
+     * PASSWORD_CHANGED. For Airfrog's home page, as `connect()`.
+     * @param {string} host - as for `connect()`
+     * @param {string} password - the new password. An empty password removes it
+     * @param {object} [options] - as for `connect()`
+     * @returns {Promise<void>}
+     */
+    static async resetPassword(host, password, { checkHello = null } = {}) {
+        // K is computed between a connection that reads HELLO's iterations
+        // and the one that sends it, as Airfrog closes a connection that
+        // hasn't logged in after 5 s.
+        const probe = await AwpSocket.open(host, null, { checkHello, login: false });
+        const { iterations } = probe.hello;
+        probe.close();
+        const { key, salt } = newPasswordKey(password, iterations);
+        const socket = await AwpSocket.open(host, null, { checkHello, login: false });
+        const airfrog = new Airfrog(host, socket.hello, socket);
+        try {
+            if (socket.hello.iterations !== iterations) {
+                throw new AirfrogError('INVALID_MESSAGE', `HELLO's iterations changed from ${iterations}`);
+            }
+            await airfrog.#sendPassword(key, salt);
+        } finally {
+            airfrog.close();
+        }
     }
 
     /**
@@ -427,7 +472,8 @@ export class Airfrog extends EventTarget {
      * because a browser opens a window only then.
      *
      * Resolves once the user has logged in in the bridge window. Rejects with
-     * CLOSED when the user closes that window first.
+     * CLOSED when the user closes that window first, and with ACCESS_POINT
+     * when the window opened over the Airfrog Access Point.
      * @param {string} host - as for `connect()`
      * @returns {Promise<Airfrog>}
      */
@@ -483,6 +529,26 @@ export class Airfrog extends EventTarget {
     /** @returns {number} HELLO's max_transfer: the most bulk data in one request or response */
     getMaxTransfer() {
         return this.#hello.maxTransfer;
+    }
+
+    /** @returns {number} HELLO's interface, how this connection reaches Airfrog: an Interface */
+    getInterface() {
+        return this.#hello.interface;
+    }
+
+    /** @returns {string} HELLO's manifest_url: the address of the firmware's Airfrog manifest */
+    getManifestUrl() {
+        return this.#hello.manifestUrl;
+    }
+
+    /** @returns {Array<Uint8Array>} HELLO's keys: the firmware's release keys, the release key first */
+    getReleaseKeys() {
+        return this.#hello.releaseKeys();
+    }
+
+    /** @returns {boolean} whether Airfrog had a password when this connection opened */
+    hasPassword() {
+        return this.#hello.hasPassword();
     }
 
     /** @returns {TargetInfo} the last TARGET Airfrog sent */
@@ -677,7 +743,13 @@ export class Airfrog extends EventTarget {
     /**
      * Sets, changes or removes Airfrog's password with AIRFROG_CMD
      * SET_PASSWORD. The password doesn't leave this page: Airfrog receives K,
-     * derived with a new random salt and HELLO's iterations.
+     * derived with a new random salt and HELLO's iterations. Removing it
+     * sends K and salt as zeros. On a logged-in connection K is sent
+     * encrypted, XORed with HMAC-SHA256(S, PASSWORD_LABEL ‖ salt) where S is
+     * the connection's key, removal included. In an extension UI with full
+     * access K is sent in the clear and the Airfrog UI encrypts it with its
+     * own connection's key. The password rule, PASSWORD_RULE in messages.js,
+     * isn't checked here.
      *
      * Airfrog then closes every connection, this one included, with
      * PASSWORD_CHANGED, which the `close` event reports.
@@ -685,12 +757,47 @@ export class Airfrog extends EventTarget {
      * @returns {Promise<void>}
      */
     async setPassword(password) {
-        let fields = encodeSetPassword({});
-        if (password !== '') {
-            const salt = crypto.getRandomValues(new Uint8Array(SALT_LEN));
-            fields = encodeSetPassword({ key: passwordKey(password, salt, this.#hello.iterations), salt });
+        const { key, salt } = newPasswordKey(password, this.#hello.iterations);
+        await this.#sendPassword(key, salt);
+    }
+
+    /** Sends SET_PASSWORD with key, encrypted on a logged-in connection, and salt. */
+    async #sendPassword(key, salt) {
+        const s = this.#pipe.key;
+        if (s) {
+            const pad = hmacSha256(s, new TextEncoder().encode(PASSWORD_LABEL), salt);
+            key.forEach((b, i) => { key[i] = b ^ pad[i]; });
         }
-        await this.airfrogCmd(Command.SET_PASSWORD, fields, CONNECT_TIMEOUT_MS);
+        await this.airfrogCmd(Command.SET_PASSWORD, encodeSetPassword({ key, salt }), CONNECT_TIMEOUT_MS);
+    }
+
+    /**
+     * Reads the access point's state and name with AIRFROG_CMD GET_WIFI_AP.
+     * @returns {Promise<{state: number, stations: number, ipv4: Uint8Array, ipv6: Uint8Array, ssid: string}>}
+     *          state is AP_ON when the access point is on. stations is the
+     *          number of devices connected to it
+     */
+    async getWifiAp() {
+        const response = await this.airfrogCmd(Command.GET_WIFI_AP, EMPTY, CONNECT_TIMEOUT_MS);
+        const f = decodeWifiAp(response);
+        if (!f) {
+            throw this.#fail(new AirfrogError('INVALID_MESSAGE', `${response.length}-byte GET_WIFI_AP response`));
+        }
+        return f;
+    }
+
+    /**
+     * Sets the access point's name and password with AIRFROG_CMD
+     * SET_WIFI_AP. Airfrog allows it only over the access point and fails
+     * it with NOT_PERMITTED elsewhere. If the access point is on, Airfrog
+     * then closes the connections over it with NETWORK_SETTINGS_CHANGED and
+     * restarts it with the new settings.
+     * @param {string} ssid - 1 to 32 bytes
+     * @param {string} password - 8 to 63 bytes
+     * @returns {Promise<void>}
+     */
+    async setWifiAp(ssid, password) {
+        await this.airfrogCmd(Command.SET_WIFI_AP, encodeSetWifiAp({ ssid, password }), CONNECT_TIMEOUT_MS);
     }
 
     /**
@@ -714,18 +821,26 @@ export class Airfrog extends EventTarget {
 
     /**
      * Installs an extension image with EXT_BEGIN, EXT_WRITE and EXT_FINISH.
-     * An image whose extension is installed updates it.
+     * An image whose extension is installed updates it. Airfrog checks the
+     * signature against its release keys. It installs an unsigned image
+     * only over serial or the access point started with the recovery button,
+     * and fails it with NOT_PERMITTED elsewhere. `readSignedFile()` splits a
+     * signed file into its image and signature. A client sends a signature
+     * only when Airfrog has its key, `signatureFor()`, so an image signed
+     * with another key installs unsigned.
      * @param {Uint8Array} image - the extension image, unchanged
-     * @param {number} flags - ExtensionFlag's TAB and SIDE_LOADED
+     * @param {number} flags - SetExtensionFlag's TAB
+     * @param {Uint8Array|null} [signature] - the image's signature, null for
+     *        an unsigned image
      * @returns {Promise<void>}
      */
-    async installExtension(image, flags) {
+    async installExtension(image, flags, signature = null) {
         const max = this.getMaxTransfer();
         // One request sequence, so another request can't delay a write past
         // Airfrog's install timeout.
         await this.#locked(async () => {
-            await this.#airfrogCmd(Command.EXT_BEGIN,
-                encodeExtBegin({ size: image.length, sha256: sha256(image), flags }), EXT_WRITE_TIMEOUT_MS);
+            await this.#airfrogCmd(Command.EXT_BEGIN, encodeExtBegin({ size: image.length, sha256: sha256(image), flags,
+                signature: signature ?? UNSIGNED }), EXT_WRITE_TIMEOUT_MS);
             for (let offset = 0; offset < image.length; offset += max) {
                 await this.#airfrogCmd(Command.EXT_WRITE,
                     encodeOtaWrite({ offset, data: image.subarray(offset, offset + max) }), EXT_WRITE_TIMEOUT_MS);
@@ -974,6 +1089,21 @@ export class Extension extends EventTarget {
     command(data, timeoutMs) {
         return this.#send(data, timeoutMs);
     }
+}
+
+/**
+ * K for a new password with a new random salt, or zeros for both to remove
+ * the password.
+ * @param {string} password - empty to remove it
+ * @param {number} iterations - HELLO's
+ * @returns {{key: Uint8Array, salt: Uint8Array}}
+ */
+function newPasswordKey(password, iterations) {
+    if (password === '') {
+        return { key: new Uint8Array(32), salt: new Uint8Array(SALT_LEN) };
+    }
+    const salt = crypto.getRandomValues(new Uint8Array(SALT_LEN));
+    return { key: passwordKey(password, salt, iterations), salt };
 }
 
 /**

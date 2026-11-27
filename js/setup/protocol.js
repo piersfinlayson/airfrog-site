@@ -5,9 +5,9 @@
 // AIRFROG_CMD's commands and their fields, from AIRFROG_CMD in
 // airfrog-v2/docs/websocket-protocol.md.
 
-import { FieldError } from './bytes.js';
+import { FieldError, hex } from './bytes.js';
 import {
-    AP_ON, BOOT_WINDOW_AUTO, BOOT_WINDOW_MAX_MS, Command, Ipv4Mode, PinLevel, PinRole, RESCAN_DB_MAX, RESCAN_MIN_S,
+    AP_ON, BOOT_WINDOW_AUTO, BOOT_WINDOW_MAX_MS, Command, Interface, Ipv4Mode, PinLevel, PinRole, RESCAN_DB_MAX, RESCAN_MIN_S,
     RestartMode, SCAN_START, ScanSecurity, ScanState, SetStaFlag, SettingsFlag, StaFlag, StaReason, StaState,
     decodeBoards, decodeFwInfo,
     decodeAuthorisedWebsites, decodeHello, decodeHostAliases, decodeHostname, decodeHwInfo, decodePinMap, decodeScan,
@@ -15,15 +15,34 @@ import {
     decodeWifiAp, decodeWifiSta, encodeAuthorisedWebsite as encodeWebsite, encodeHostAliases as encodeAliases,
     encodeHostname as encodeName,
     encodeOtaBegin as encodeBegin, encodeOtaWrite as encodeWrite, encodeRestart as encodeRestartFields,
-    encodeSetWifiSta as encodeWifi, encodeSettings as encodeSettingsFields, encodeWifiScan as encodeScan,
+    encodeSetWifiAp as encodeWifiAp, encodeSetWifiSta as encodeWifi, encodeSettings as encodeSettingsFields,
+    encodeWifiScan as encodeScan, SIGNATURE_LEN,
 } from '../schema.js';
 
 export {
-    BOOT_WINDOW_AUTO, BOOT_WINDOW_MAX_MS, Command, Ipv4Mode, PinLevel, PinRole, RESCAN_DB_MAX, RESCAN_MIN_S,
+    BOOT_WINDOW_AUTO, BOOT_WINDOW_MAX_MS, Command, Interface, Ipv4Mode, PinLevel, PinRole, RESCAN_DB_MAX, RESCAN_MIN_S,
     RestartMode, ScanSecurity, ScanState, SetStaFlag, SettingsFlag, StaFlag, StaReason, StaState,
 };
 
 export const EMPTY = new Uint8Array(0);
+
+/**
+ * Whether a connection reaches Airfrog over its access point.
+ * @param {number|null} via - HELLO's interface
+ */
+export function overAp(via) {
+    return via === Interface.AP || via === Interface.AP_FIRST_SETUP || via === Interface.AP_BUTTON;
+}
+
+/**
+ * Whether recovery through the target can be turned on over a connection:
+ * serial, or the access point during first setup or started with the
+ * recovery button.
+ * @param {number|null} via - HELLO's interface
+ */
+export function recoveryAllowed(via) {
+    return via === Interface.SERIAL || via === Interface.AP_FIRST_SETUP || via === Interface.AP_BUTTON;
+}
 
 /**
  * Returns fields. Throws a FieldError when fields is null.
@@ -40,11 +59,11 @@ function need(fields, p, what) {
 
 /** HELLO's payload. */
 export function parseHello(p) {
-    const { revision, flags, maxTransfer, salt, iterations } = need(decodeHello(p), p, 'HELLO');
+    const { revision, flags, maxTransfer, salt, iterations, interface: via } = need(decodeHello(p), p, 'HELLO');
     if (!iterations) {
         throw new FieldError('HELLO with 0 PBKDF2 iterations');
     }
-    return { revision, flags, maxTransfer, salt, iterations };
+    return { revision, flags, maxTransfer, salt, iterations, interface: via };
 }
 
 export function parseHwInfo(p) {
@@ -55,9 +74,11 @@ export function parseHwInfo(p) {
     };
 }
 
+/** GET_FW_INFO's response. sha256 is the running firmware image's, in hex. */
 export function parseFwInfo(p) {
     const f = need(decodeFwInfo(p), p, 'GET_FW_INFO response');
-    return { version: f.version.join('.'), bootloader: f.bootloader, wamr: f.wamr.join('.'), commit: f.commit ?? '' };
+    return { version: f.version.join('.'), bootloader: f.bootloader, wamr: f.wamr.join('.'), sha256: hex(f.sha256),
+        commit: f.commit ?? '' };
 }
 
 export function parseWifiSta(p) {
@@ -67,6 +88,11 @@ export function parseWifiSta(p) {
         password: Boolean(f.flags & StaFlag.PASSWORD), netmask: f.ipv4Netmask, gateway: f.ipv4Gateway,
         dns: f.ipv4Dns, ssid: f.ssid,
     };
+}
+
+/** SET_WIFI_AP's fields. */
+export function encodeSetWifiAp(ssid, password) {
+    return encodeWifiAp({ ssid, password });
 }
 
 export function parseWifiAp(p) {
@@ -179,9 +205,11 @@ export function parseWifiScan(p) {
 /**
  * @param {number} size
  * @param {Uint8Array} sha256 - 32 bytes
+ * @param {Uint8Array|null} signature - the image's signature, null for an
+ *        unsigned image
  */
-export function encodeOtaBegin(size, sha256) {
-    return encodeBegin({ size, sha256 });
+export function encodeOtaBegin(size, sha256, signature) {
+    return encodeBegin({ size, sha256, signature: signature ?? new Uint8Array(SIGNATURE_LEN) });
 }
 
 export function encodeOtaWrite(offset, data) {

@@ -53,6 +53,9 @@ jobs:
           "${PYTHON}" ci/schema.py write site
           node ci/tool-css.mjs
 
+      - name: Bundle esptool-js into commissioning/vendor/esptool.js
+        run: ci/vendor-esptool.sh
+
       - name: Assemble the published files
         run: |
           rm -rf pages

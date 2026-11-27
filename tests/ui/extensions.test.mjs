@@ -24,13 +24,14 @@ import {
     uiAddress,
 } from '../../ui/src/extensions/list.js';
 import { crc32, readZip, ZipError } from '../../ui/src/extensions/zip.js';
-import { readPackage } from '../../ui/src/extensions/package.js';
+import { readExtensionFile, readPackage } from '../../ui/src/extensions/package.js';
+import { signedFile } from './minisign.mjs';
 import { FrameLink, isTrusted, route } from '../../ui/src/extensions/bridge.js';
 import { AwpSocket, EXTENSION_KEY } from '../../js/awp.js';
-import { sha256 } from '../../js/sha256.js';
+import { pbkdf2HmacSha256, sha256 } from '../../js/sha256.js';
 import {
     AIRFROG_CMD, CLAIM, Command, ERROR, HELLO, IDENTIFY, RELEASE, TARGET, TARGET_CMD, encodeAirfrogCmd, encodeExtCmd,
-    encodeExtImage, encodeSetExtensions,
+    encodeExtImage, encodeHostname, encodeSetExtensions,
 } from '../../js/schema.js';
 
 const encoder = new TextEncoder();
@@ -168,9 +169,17 @@ test('the extension image for this Airfrog', () => {
 });
 
 test("a downloaded image's size, SHA-256 and header", () => {
-    const bytes = image(meta('hello'));
+    const plain = image(meta('hello'));
+    const signed = signedFile(plain);
+    const file = checkDownload(signed, 'hello', listImage(signed));
+    assert.deepEqual([file.image, file.signature], [plain, signed.subarray(signed.length - 74)],
+        'a signed file: its image and signature');
+    const extra = Uint8Array.from([...signed, 0]);
+    assert.throws(() => checkDownload(extra, 'hello', listImage(extra)), { message: 'Invalid extension.' },
+        'a byte after the signature block');
+    const bytes = plain;
     const entry = listImage(bytes);
-    checkDownload(bytes, 'hello', entry);
+    assert.equal(checkDownload(bytes, 'hello', entry).signature, null, 'an unsigned image');
     const corrupt = bytes.slice();
     corrupt[corrupt.length - 1] ^= 1;
     assert.throws(() => checkDownload(corrupt, 'hello', entry), { message: 'Download corrupt. Try again.' });
@@ -200,7 +209,7 @@ test('extension metadata', () => {
 test('extension UI addresses (D1a)', () => {
     assert.equal(uiAddress('https://example.com/x/', false), 'https://example.com/x/');
     assert.equal(uiAddress('http://example.com/x/', true), null);
-    assert.equal(uiAddress('http://127.0.0.1:8000/x/', false), null, 'local only for side-loaded or a local repository');
+    assert.equal(uiAddress('http://127.0.0.1:8000/x/', false), null, 'local only for an unsigned extension or a local repository');
     assert.equal(uiAddress('http://127.0.0.1:8000/x/', true), 'http://127.0.0.1:8000/x/');
     assert.equal(uiAddress('http://localhost/x/', true), 'http://localhost/x/');
     for (const bad of ['http://127.0.0.2/', 'http://localhost.example.com/', 'http://[::1]/', 'javascript:alert(1)',
@@ -275,6 +284,22 @@ test("an extension package's image for this Airfrog", async () => {
 const OWN = 'watchdog';
 const cmd = (command, fields = new Uint8Array(0)) => ({ type: AIRFROG_CMD, payload: encodeAirfrogCmd({ command, fields }) });
 
+test('an extension file: a package, a signed image or an unsigned image', async () => {
+    const m = meta('hello');
+    const plain = image(m);
+    const signed = await readExtensionFile(signedFile(plain), 1, '2.4.5');
+    assert.deepEqual([signed.metadata, signed.image, signed.signature.length], [m, plain, 74]);
+    const unsigned = await readExtensionFile(plain, 1, '2.4.5');
+    assert.deepEqual([unsigned.image, unsigned.signature], [plain, null]);
+    const pkg = await readExtensionFile(zip([['extension-meta.json', encoder.encode(JSON.stringify(m))],
+        ['images/0.bin', plain]]), 1, '2.4.5');
+    assert.deepEqual([pkg.metadata, pkg.image, pkg.signature], [m, plain, null], 'a package is unsigned');
+    await assert.rejects(readExtensionFile(image(m, 2, [2, 4, 5]), 1, '2.4.5'),
+        { message: 'Extension not supported by this Airfrog.' }, "another model's image");
+    await assert.rejects(readExtensionFile(Uint8Array.from([...plain, 9]), 1, '2.4.5'),
+        { message: 'Invalid extension file.' }, 'a byte after the image');
+});
+
 test("the bridge's forwarding rules", () => {
     for (const type of [CLAIM, RELEASE, TARGET_CMD, IDENTIFY]) {
         assert.equal(route({ type, payload: new Uint8Array(4) }, OWN, false), 'forward');
@@ -294,16 +319,19 @@ test("the bridge's forwarding rules", () => {
     assert.equal(route({ type: CLAIM, payload: [] }, OWN, false), 'drop', 'payload not a Uint8Array');
     assert.equal(route({ type: 1.5, payload: new Uint8Array(0) }, OWN, false), 'drop');
     assert.equal(route(null, OWN, false), 'drop');
-    assert.equal(route(cmd(Command.SET_PASSWORD, new Uint8Array(48)), OWN, true), 'forward', 'airfrog.org: every request');
+    assert.equal(route(cmd(Command.SET_PASSWORD, new Uint8Array(48)), OWN, true), 'forward', 'full access: every request');
     assert.equal(route({ type: EXT_CMD, payload: encodeExtCmd({ name: 'other', data: new Uint8Array(0) }) }, OWN, true),
         'forward');
-    assert.equal(isTrusted('https://airfrog.org'), true);
-    assert.equal(isTrusted('https://ext.airfrog.org'), true);
-    assert.equal(isTrusted('http://airfrog.org'), false);
-    assert.equal(isTrusted('https://airfrog.org.example.com'), false);
-    assert.equal(isTrusted('https://notairfrog.org'), false);
-    assert.equal(isTrusted('https://airfrog.org:8443'), false);
-    assert.equal(isTrusted('null'), false);
+    const full = ['https://airfrog.org', 'https://tools.example.com:8443', 'not a URL'];
+    assert.equal(isTrusted('https://airfrog.org', full), true);
+    assert.equal(isTrusted('https://tools.example.com:8443', full), true);
+    assert.equal(isTrusted('https://ext.airfrog.org', full), false, 'a subdomain isn\'t included');
+    assert.equal(isTrusted('http://airfrog.org', full), false);
+    assert.equal(isTrusted('https://airfrog.org.example.com', full), false);
+    assert.equal(isTrusted('https://airfrog.org:8443', full), false);
+    assert.equal(isTrusted('https://tools.example.com', full), false);
+    assert.equal(isTrusted('null', full), false);
+    assert.equal(isTrusted('https://airfrog.org', []), false, 'an empty list: none');
 });
 
 /**
@@ -432,6 +460,58 @@ test('connectExtension() through the bridge', async () => {
     link.close();
     await until(() => fake.sessions.size === 0);
     fourth.close();
+    delete globalThis.window;
+});
+
+test('an extension UI from a full access website has every request forwarded', async () => {
+    const m = meta(OWN);
+    const { fake, host } = serve({ extensions: [{ image: image(m), flags: 1 }] });
+    const uiOrigin = 'https://tools.example.com';
+    let websites = [];
+    const w = windows(uiOrigin);
+    const link = new FrameLink({ name: OWN, origin: uiOrigin, target: () => w.frame, open: () => AwpSocket.open(host, null),
+        fullAccess: () => websites });
+    w.setLink(link);
+    globalThis.window = w.frame;
+    const { Airfrog } = await import('../../js/airfrog.js');
+    let airfrog = await Airfrog.connectExtension();
+    let e = await airfrog.airfrogCmd(Command.SET_HOSTNAME, encodeHostname({ hostname: 'bench' }), 1000).catch(x => x);
+    assert.equal(e.code, 'NOT_PERMITTED', 'not listed: limited');
+    airfrog.close();
+    websites = [uiOrigin];
+    airfrog = await Airfrog.connectExtension();
+    await airfrog.airfrogCmd(Command.SET_HOSTNAME, encodeHostname({ hostname: 'bench' }), 1000).catch(x => x);
+    assert.equal(fake.hostname, 'bench', 'listed when the connection opens: every request forwarded');
+    await until(() => airfrog.isClosed());
+    link.close();
+    delete globalThis.window;
+});
+
+test('a full access extension UI sets a password that logs in, and removes it', async () => {
+    const { fake, host } = serve({ password: 'Frog pond 1', extensions: [{ image: image(meta(OWN)), flags: 1 }] });
+    const uiOrigin = 'https://tools.example.com';
+    let password = 'Frog pond 1';
+    const w = windows(uiOrigin);
+    const link = new FrameLink({ name: OWN, origin: uiOrigin, target: () => w.frame,
+        open: () => AwpSocket.open(host, password), fullAccess: () => [uiOrigin] });
+    w.setLink(link);
+    globalThis.window = w.frame;
+    const { Airfrog } = await import('../../js/airfrog.js');
+    let airfrog = await Airfrog.connectExtension();
+    await airfrog.setPassword('Newt pond 2');
+    await until(() => airfrog.isClosed());
+    const sent = fake.sentKey;
+    const k = pbkdf2HmacSha256(encoder.encode('Newt pond 2'), fake.salt, fake.config.iterations);
+    assert.ok(sent.some((b, i) => b !== k[i]), 'the key reaches Airfrog encrypted');
+    const logged = await Airfrog.connect(host, 'Newt pond 2');
+    assert.ok(!logged.isClosed(), 'the new password logs in');
+    logged.close();
+    password = 'Newt pond 2';
+    airfrog = await Airfrog.connectExtension();
+    await airfrog.setPassword('');
+    await until(() => airfrog.isClosed());
+    assert.equal(fake.key, null, 'removing it, encrypted too, removes it');
+    link.close();
     delete globalThis.window;
 });
 

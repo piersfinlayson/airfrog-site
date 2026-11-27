@@ -39,10 +39,16 @@ export async function until(condition, timeoutMs = 2000) {
     }
 }
 
-/** An ESP-IDF app image of size bytes with version in its app description, for model. */
+/**
+ * An ESP-IDF app image of size bytes, a multiple of 16, with version in its
+ * app description, for model. It has one segment, and its checksum ends it.
+ */
 export function espImage(version, size = 10000, { chip = 5, model = Model.MINI, project = 'airfrog' } = {}) {
     const image = new Uint8Array(size).map((_, i) => (i * 13) & 0xff);
     image[0] = 0xE9;
+    image[1] = 1;
+    image[23] = 0;
+    new DataView(image.buffer).setUint32(28, size - 48, true);
     new DataView(image.buffer).setUint16(12, chip, true);
     new DataView(image.buffer).setUint16(IMAGE_MODEL_OFFSET, model, true);
     new DataView(image.buffer).setUint32(32, 0xABCD5432, true);

@@ -21,7 +21,7 @@ const ascii = (s) => [...s].map(c => c.charCodeAt(0));
 
 test('command IDs', () => {
     assert.deepEqual(Object.values(Command), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
-        29, 30, 31, 32, 33, 34, 35]);
+        29, 30, 31, 32, 33, 34, 35, 36]);
 });
 
 test('GET_BOARDS', () => {
@@ -48,11 +48,15 @@ test('GET_HW_INFO', () => {
 });
 
 test('GET_FW_INFO, with and without the commit', () => {
-    assert.deepEqual(parseFwInfo(b(0, 2, 13, 0, 3, 0, 0, 0, 0, 0, 0, 0)),
-        { version: '0.2.13', bootloader: 3, wamr: '0.0.0', commit: '' });
-    assert.deepEqual(parseFwInfo(b(0, 2, 13, 0, 3, 0, 0, 0, 2, 4, 5, 0, 8, 0, ...new TextEncoder().encode('1a2b3c4d'), 99)),
-        { version: '0.2.13', bootloader: 3, wamr: '2.4.5', commit: '1a2b3c4d' });
+    const sha = Array.from({ length: 32 }, (_, i) => i);
+    const shaHex = sha.map(x => x.toString(16).padStart(2, '0')).join('');
+    assert.deepEqual(parseFwInfo(b(0, 2, 13, 0, 3, 0, 0, 0, 0, 0, 0, 0, ...sha)),
+        { version: '0.2.13', bootloader: 3, wamr: '0.0.0', sha256: shaHex, commit: '' });
+    assert.deepEqual(parseFwInfo(b(0, 2, 13, 0, 3, 0, 0, 0, 2, 4, 5, 0, ...sha, 8, 0, ...new TextEncoder().encode('1a2b3c4d'), 99)),
+        { version: '0.2.13', bootloader: 3, wamr: '2.4.5', sha256: shaHex, commit: '1a2b3c4d' });
     assert.throws(() => parseFwInfo(b(0, 2, 13)), (e) => /3-byte GET_FW_INFO response/.test(e.detail));
+    assert.throws(() => parseFwInfo(b(0, 2, 13, 0, 3, 0, 0, 0, 0, 0, 0, 0, ...sha.slice(1))),
+        (e) => /43-byte GET_FW_INFO response/.test(e.detail), 'a SHA-256 a byte short');
 });
 
 test('GET_WIFI_STA', () => {
@@ -173,7 +177,9 @@ test('RESTART', () => {
 
 test('OTA_BEGIN and OTA_WRITE', () => {
     const sha = new Uint8Array(32).fill(0xab);
-    assert.deepEqual([...encodeOtaBegin(0x123456, sha)], [0x56, 0x34, 0x12, 0, ...sha]);
+    assert.deepEqual([...encodeOtaBegin(0x123456, sha, null)], [0x56, 0x34, 0x12, 0, ...sha, ...new Array(74).fill(0)]);
+    const signature = Uint8Array.from({ length: 74 }, (_, i) => i);
+    assert.deepEqual([...encodeOtaBegin(0x123456, sha, signature)], [0x56, 0x34, 0x12, 0, ...sha, ...signature]);
     assert.deepEqual([...encodeOtaWrite(4096, b(1, 2))], [0, 0x10, 0, 0, 1, 2]);
 });
 

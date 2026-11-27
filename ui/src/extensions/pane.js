@@ -3,7 +3,7 @@
 // MIT License
 
 // An extension UI tab's content: the extension UI in a frame, with its
-// connection to Airfrog (ac4-design.md section 6, "Tabs" and "Loading").
+// connection to Airfrog.
 
 import { h, message } from '../../../js/setup/dom.js';
 import { EXTENSIONS } from '../../../js/messages.js';
@@ -32,13 +32,16 @@ export class ExtensionPane {
      * @param {string} options.ui - the extension UI's address, checked
      * @param {function(): Promise<object>} options.open - opens a logged-in
      *        AwpSocket to Airfrog
+     * @param {function(): Array<string>} [options.fullAccess] - the websites
+     *        whose extension UIs have every request forwarded
      * @param {{loadMs?: number, unloadMs?: number}} [options.times]
      */
-    constructor({ name, displayName, ui, open, times = {} }) {
+    constructor({ name, displayName, ui, open, fullAccess = () => [], times = {} }) {
         this.name = name;
         this.displayName = displayName;
         this.ui = ui;
         this.open = open;
+        this.fullAccess = fullAccess;
         this.loadMs = times.loadMs ?? LOAD_MS;
         this.unloadMs = times.unloadMs ?? UNLOAD_MS;
         /** unloaded, loading, loaded or failed */
@@ -99,6 +102,7 @@ export class ExtensionPane {
         frame.setAttribute('sandbox', SANDBOX);
         this.#frame = frame;
         this.#link = new FrameLink({ name: this.name, origin, target: () => frame.contentWindow, open: this.open,
+            fullAccess: this.fullAccess,
             onConnect: () => this.#connected(), onHeight: (height) => { frame.style.height = `${height}px`; } });
         this.state = 'loading';
         this.msg.say(EXTENSIONS.LOADING_UI(this.displayName));

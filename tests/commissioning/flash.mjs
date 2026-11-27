@@ -29,7 +29,7 @@ function entry(type, subtype, offset, size, name) {
   return e;
 }
 
-/** airfrog-v2's partition table (docs/ac3-design.md). */
+/** airfrog-v2's partition table. */
 export const TABLE = [
   entry(1, 2, 0x9000, 0x3000, 'nvs'), entry(1, 0, OTADATA, 0x2000, 'otadata'),
   entry(0, 0, FACTORY, 0x40000, 'factory'), entry(0, 0x10, OTA_0, 0x180000, 'ota_0'),

@@ -3,12 +3,13 @@
 // MIT License
 
 // Airfrog's full user interface. Airfrog's home page loads it from the UI
-// manifest and calls start() once (airfrog-v2/docs/ac3-design.md).
+// manifest and calls start() once.
 // Its connection, Network and System tabs and target settings are Airfrog's
 // internal JS setup module, which Airfrog serves at /setup.js, so they are
 // always the firmware's own.
 
 import { startBridge } from '../../js/bridge.js';
+import { checkHello } from './firmware-check.js';
 import { FullUi } from './full-ui.js';
 import { Manifests } from './manifests.js';
 import { UI_CSS } from './style.js';
@@ -19,7 +20,7 @@ import { AIRFROG, HOME_PAGE } from '../../js/messages.js';
 const VERSION = typeof __UI_VERSION__ === 'string' ? __UI_VERSION__ : undefined;
 
 /** The oldest interface of Airfrog's internal JS setup module this runs with. */
-const SETUP_API = 2;
+const SETUP_API = 3;
 
 /**
  * Replaces the page with Airfrog's full user interface. With #bridge=ORIGIN
@@ -42,7 +43,7 @@ export async function start({}) {
         document.body.replaceChildren(h('div', { class: 'bar' }, h('div', { class: 'bar-in' },
             h('img', { src: '/logo.png', alt: AIRFROG }), h('div', { class: 'host' }, location.hostname))),
         h('main', {}, container));
-        await startBridge(container);
+        await startBridge(container, { checkHello });
         return;
     }
     const manifests = new Manifests();
@@ -54,8 +55,8 @@ export async function start({}) {
         firmwareError = e.message;
     }
     new FullUi({
-        setup, firmware, firmwareError, loadFirmware: () => manifests.firmware(),
+        setup, firmware, firmwareError,
         loadExtensions: () => manifests.extensions(), extensionsUrl: manifests.extensionsUrl,
-        version: VERSION,
+        fullAccess: () => manifests.fullAccessWebsites, version: VERSION,
     }).start();
 }

@@ -203,7 +203,7 @@ async function refused(message) {
         'a website not on https by its full address');
 }
 {
-    setUp('#bridge=https://onerom.org', { password: 'frog', iterations: 500 });
+    setUp('#bridge=https://onerom.org', { password: 'frog' });
     const started = startBridge(container);
     await sleep(20);
     const form = container.find('bridge-login');
@@ -226,7 +226,7 @@ async function refused(message) {
         'logs in and forwards HELLO and TARGET');
 }
 {
-    setUp('#bridge=https://onerom.org', { password: 'frog', iterations: 500, blockSeconds: 30 });
+    setUp('#bridge=https://onerom.org', { password: 'frog', blockSeconds: 30 });
     startBridge(container);
     await sleep(20);
     container.find('bridge-password').value = 'frog';
@@ -264,7 +264,7 @@ const allowLine = 'text: Allow evil.test to connect to airfrog.test?';
         'Cancel closes the window and saves nothing');
 }
 {
-    setUp('#bridge=https://evil.test', { password: 'frog', iterations: 500 });
+    setUp('#bridge=https://evil.test', { password: 'frog' });
     startBridge(container);
     await sleep(20);
     check(commands().length === 0, 'with a password the window logs in before it reads the list');
@@ -454,8 +454,22 @@ for (const [code, reason] of [
         && !win.closed && lastClose()?.message === reason, `Airfrog's close ${code} is displayed and reaches the page`);
 }
 {
+    // An error from checkHello() ends the connection before login with its error
+    setUp('#bridge=https://onerom.org', { password: 'frog' });
+    const { AirfrogError } = await import('../../js/awp.js');
+    let seen = null;
+    await startBridge(container, { checkHello: (hello) => {
+        seen = hello;
+        return new AirfrogError('OTHER_FIRMWARE', null, 'Other firmware.');
+    } });
+    await sleep(10);
+    check(seen?.manifestUrl === 'https://manifest.test/manifest.json' && !fake.received.some(m => m.type === 2)
+        && lines().some(l => l === 'text: Other firmware.') && lastClose()?.code === 'OTHER_FIRMWARE'
+        && lastClose()?.message === 'Other firmware.', "checkHello()'s error ends the bridge before login");
+}
+{
     // Signed, with a password, so the hmac is checked
-    setUp('#bridge=https://onerom.org', { password: 'frog', iterations: 500 });
+    setUp('#bridge=https://onerom.org', { password: 'frog' });
     const started = startBridge(container);
     await sleep(20);
     container.find('bridge-password').value = 'frog';
@@ -512,7 +526,7 @@ for (const [what, airfrog, reason] of [
         && lastClose()?.message === reason, `${what} is displayed and reaches the page`);
 }
 {
-    setUp('#bridge=https://onerom.org', { password: 'frog', iterations: 500, badProof: true });
+    setUp('#bridge=https://onerom.org', { password: 'frog', badProof: true });
     const started = startBridge(container);
     await sleep(20);
     container.find('bridge-password').value = 'frog';

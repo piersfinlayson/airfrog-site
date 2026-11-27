@@ -6,7 +6,8 @@
 // against the fake Airfrog in a browser, with /logo.png and /favicon.png as
 // Airfrog serves them and /setup.js, the setup module with the test
 // models. POST /sign responds with the request body's minisign signature
-// file, signed with airfrog-v2's test key. Run ci/test-deps.sh first.
+// file, and POST /sign-file with its signed file, signed with the test key
+// 'release' (tests/ui/minisign.mjs), or ?key=NAME. Run ci/test-deps.sh first.
 //
 // Usage: node tests/ui/browser/serve.mjs [port]
 // Then open http://localhost:PORT/tests/ui/browser/ (default port 8765).
@@ -22,12 +23,16 @@
 // one with an empty list of releases. ?extensions=URL is the extensions
 // manifest, ?installed=URL,URL the extension images installed and ?module=NAME an
 // extension whose EXT_CMD replies with its data reversed. ?fallback=REASON displays
-// Airfrog's setup, ?tab=ID on that tab.
+// Airfrog's setup, ?tab=ID on that tab. ?via=N is HELLO's interface, and
+// ?keys=HEX,HEX and ?manifest=URL HELLO's release keys and manifest_url, and
+// ?newkeys=HEX,HEX and ?newmanifest=URL the firmware's after an update.
+// ?fullaccess=URL,URL is the Airfrog manifest's full_access_websites, and
+// ?recovery has recovery through the target on.
 
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { minisig } from '../minisign.mjs';
+import { minisig, signedFile } from '../minisign.mjs';
 
 const root = path.resolve(new URL('../../../', import.meta.url).pathname);
 const port = Number(process.argv[2] ?? 8765);
@@ -38,10 +43,12 @@ const AIRFROG = { '/logo.png': 'images/logo.png', '/favicon.png': 'images/favico
 
 http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (req.method === 'POST' && url.pathname === '/sign') {
+    if (req.method === 'POST' && (url.pathname === '/sign' || url.pathname === '/sign-file')) {
         const body = [];
         req.on('data', (b) => body.push(b));
-        req.on('end', () => res.writeHead(200, { 'Content-Type': 'text/plain' }).end(minisig(Buffer.concat(body))));
+        req.on('end', () => res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+            .end(url.pathname === '/sign' ? minisig(Buffer.concat(body))
+                : signedFile(Buffer.concat(body), url.searchParams.get('key') ?? 'release')));
         return;
     }
     let file = path.join(root, AIRFROG[url.pathname] ?? decodeURIComponent(url.pathname));

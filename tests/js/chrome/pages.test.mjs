@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Cdp } from './harness.mjs';
+import { UPDATE } from '../../../js/messages.js';
 import { IMAGE_MODEL_OFFSET, MODELS, Model } from '../../../build/test-deps/schema/js/schema.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -59,6 +60,30 @@ const ready = `(c => c && !c.hidden && !c.inert)(document.querySelector('.conten
 const tabs = `[...document.querySelectorAll('nav button')].map(b => b.textContent).join()`;
 const visible = (selector) => `[...document.querySelectorAll(${JSON.stringify(selector)})]
     .filter(e => e.offsetParent).map(e => e.textContent.trim())`;
+/**
+ * Chooses an Airfrog firmware file of project for model: an ESP-IDF app
+ * image of size bytes with one segment, signed by tests/ui/browser/serve.mjs
+ * when signed.
+ */
+const choose = (project, model = Model.MINI, { signed = false, version = '0.2.9', size = 2000 } = {}) => `(async () => {
+    let image = new Uint8Array(${size});
+    image[0] = 0xE9;
+    image[1] = 1;
+    new DataView(image.buffer).setUint32(28, ${size} - 48, true);
+    new DataView(image.buffer).setUint16(${IMAGE_MODEL_OFFSET}, ${model}, true);
+    new DataView(image.buffer).setUint32(32, 0xABCD5432, true);
+    image.set(new TextEncoder().encode(${JSON.stringify(version)}), 48);
+    image.set(new TextEncoder().encode(${JSON.stringify(project)}), 80);
+    if (${signed}) {
+        image = new Uint8Array(await (await fetch('/sign-file', { method: 'POST', body: image })).arrayBuffer());
+    }
+    const files = new DataTransfer();
+    files.items.add(new File([image], 'airfrog-mini.bin'));
+    const input = document.querySelector('input[type=file]');
+    input.files = files.files;
+    input.dispatchEvent(new Event('change'));
+    return true;
+})()`;
 const click = (label) => `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(label)}
     && b.offsetParent).click(), true`;
 
@@ -119,21 +144,8 @@ try {
     check(await ui.eval(`[...document.querySelectorAll('dt')].find(d => d.textContent === 'Model')
         ?.nextElementSibling.textContent`) === 'Mini', "the System tab's Model is Mini");
     // A chosen firmware file is checked at once.
-    const choose = (project, model = Model.MINI) => `(() => {
-        const image = new Uint8Array(2000);
-        image[0] = 0xE9;
-        new DataView(image.buffer).setUint16(${IMAGE_MODEL_OFFSET}, ${model}, true);
-        new DataView(image.buffer).setUint32(32, 0xABCD5432, true);
-        image.set(new TextEncoder().encode('0.2.9'), 48);
-        image.set(new TextEncoder().encode(${JSON.stringify(project)}), 80);
-        const files = new DataTransfer();
-        files.items.add(new File([image], 'airfrog-mini.bin'));
-        const input = document.querySelector('input[type=file]');
-        input.files = files.files;
-        input.dispatchEvent(new Event('change'));
-        return true;
-    })()`;
     const updateButton = `[...document.querySelectorAll('button')].find(b => b.textContent === 'Update').disabled`;
+    const fileCheck = `document.querySelector('.file-check').textContent`;
     await ui.eval(choose('other'));
     await ui.until(`document.querySelector('.file-check .cross') !== null`, 5000);
     check(await ui.eval(`document.querySelector('.file-check').textContent`) === 'Invalid firmware file.'
@@ -144,10 +156,18 @@ try {
         === 'Invalid firmware file (incorrect Airfrog model).' && await ui.eval(updateButton),
     'Pro firmware on a Mini: a cross, the model message, and Update disabled');
     await ui.eval(choose('airfrog'));
+    await ui.until(`${fileCheck} === ${JSON.stringify(UPDATE.UNSIGNED_NOT_HERE)}`, 5000);
+    check(await ui.eval(`document.querySelector('.file-check .cross') !== null && ${fileCheck}`)
+        === UPDATE.UNSIGNED_NOT_HERE
+        && await ui.eval(updateButton), 'unsigned firmware over the home network: a cross, why, and Update disabled');
+    await ui.eval(choose('airfrog', Model.MINI, { signed: true, version: '0.1.9' }));
+    await ui.until(`${fileCheck} === ${JSON.stringify(UPDATE.OLDER_NOT_HERE('v0.2.0'))}`, 5000);
+    check(await ui.eval(`document.querySelector('.file-check .cross') !== null && ${fileCheck}`)
+        === UPDATE.OLDER_NOT_HERE('v0.2.0') && await ui.eval(updateButton), 'signed older firmware: a cross, why, and Update disabled');
+    await ui.eval(choose('airfrog', Model.MINI, { signed: true, version: '0.2.0' }));
     await ui.until(`document.querySelector('.file-check .tick') !== null`, 5000);
-    check(await ui.eval(`document.querySelector('.file-check').textContent`) === 'Unsigned firmware.'
-        && !await ui.eval(updateButton), 'Airfrog firmware not in the firmware manifest: a tick, Unsigned firmware., '
-        + 'and Update enabled');
+    check(await ui.eval(fileCheck) === '' && !await ui.eval(updateButton),
+        'signed firmware of the running version: a tick and Update enabled');
     const fileHelp = await ui.eval(`[...document.querySelectorAll('label')].find(l => /New firmware file/.test(l.textContent))
         .querySelector('.tip-box').textContent`);
     check(fileHelp === 'Airfrog firmware image airfrog-mini.bin from airfrog.org.', `the file tooltip (${fileHelp})`);
@@ -214,20 +234,7 @@ try {
     const refusing = await cdp.open(`${PAGE}?chip=9&model=${Model.PRO}&otamodel=${Model.MINI}#advanced`);
     await refusing.until(ready, 15000);
     await refusing.eval(click('System'));
-    await refusing.eval(`(() => {
-        const image = new Uint8Array(5000);
-        image[0] = 0xE9;
-        new DataView(image.buffer).setUint16(${IMAGE_MODEL_OFFSET}, ${Model.PRO}, true);
-        new DataView(image.buffer).setUint32(32, 0xABCD5432, true);
-        image.set(new TextEncoder().encode('0.2.9'), 48);
-        image.set(new TextEncoder().encode('airfrog'), 80);
-        const files = new DataTransfer();
-        files.items.add(new File([image], 'airfrog-pro.bin'));
-        const input = document.querySelector('input[type=file]');
-        input.files = files.files;
-        input.dispatchEvent(new Event('change'));
-        return true;
-    })()`);
+    await refusing.eval(choose('airfrog', Model.PRO, { signed: true, size: 5008 }));
     await refusing.until(`document.querySelector('.file-check .tick') !== null`, 5000);
     check(await refusing.eval(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Update').disabled`)
         === false, "Pro firmware on a Pro: the page's own check accepts it");
@@ -278,13 +285,12 @@ try {
     check(await fwInvalid.eval(`/Latest release unknown\\. Invalid release list\\./.test(${text})`)
         && !await fwInvalid.eval(`document.getElementById('firmware-offer').offsetParent`),
     'a signed firmware manifest that breaks its rules: Invalid release list. under Version');
-    // A chosen file is checked without the invalid firmware manifest, so
-    // Airfrog firmware that isn't a release's image isn't marked unsigned.
-    await fwInvalid.eval(choose('airfrog'), true);
+    // A chosen file is checked from its own signature, without the firmware manifest.
+    await fwInvalid.eval(choose('airfrog', Model.MINI, { signed: true }), true);
     await fwInvalid.until(`document.querySelector('.file-check .tick, .file-check .cross') !== null`, 5000);
     const signed = await fwInvalid.eval(`document.querySelector('.file-check .tick') !== null
         ? document.querySelector('.file-check').textContent : 'cross: ' + document.querySelector('.file-check').textContent`);
-    check(signed === '', `with an invalid firmware manifest a chosen file isn't marked unsigned (${signed})`);
+    check(signed === '', `with an invalid firmware manifest a signed file is accepted (${signed})`);
 
     const saving = await cdp.open(`${PAGE}#network`);
     await saving.until(ready, 15000);
@@ -315,11 +321,10 @@ try {
         'the no-password notice is a status line');
 
     await fallback.eval(click('System'));
-    await fallback.eval(choose('airfrog'));
+    await fallback.eval(choose('airfrog', Model.MINI, { signed: true }));
     await fallback.until(`document.querySelector('.file-check .tick') !== null`, 5000);
-    check(await fallback.eval(`document.querySelector('.file-check').textContent`) === 'Unsigned firmware.'
-        && await fallback.eval('window.firmwareLoads') === 1,
-    'without the firmware manifest, a chosen file loads it once and is marked Unsigned firmware.');
+    check(await fallback.eval(`document.querySelector('.file-check').textContent`) === '',
+        "Airfrog's setup: a signed file is accepted");
 
     const ap = await cdp.open(`${PAGE}?fallback=${encodeURIComponent(reason)}&sta=0&ap&open&ssid=`);
     await ap.until(ready, 15000);

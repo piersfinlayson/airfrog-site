@@ -9,7 +9,7 @@ are the header and footer every page loads.
 | `commissioning/` | airfrog.org/commissioning |
 | `cli/` | airfrog.org/cli |
 | `web/` | airfrog.org/web |
-| `commissioning/vendor/` | esptool-js bundled into one ES module, and its licences |
+| `commissioning/vendor/` | esptool-js bundled into one ES module, which isn't committed, and its licences |
 | `ui/` | Source of the Airfrog full user interface |
 | `ui/images/` | Renders of each released model's Airfrog board, written by `ci/render-boards.py` |
 | `js/` | The client library |
@@ -26,10 +26,15 @@ are the header and footer every page loads.
 ## Publishing
 
 `.github/workflows/pages.yml` publishes the site to GitHub Pages on each push
-to `main`. It runs `ci/urls.py write`, `ci/schema.py write site` and
-`ci/tool-css.mjs`, copies the repository into one directory without the
-patterns in its `DENY` variable and deploys that directory. Every file the
-patterns don't match is served, so a file that isn't meant to be public
+to `main`. It runs these, then copies the repository into one directory
+without the patterns in its `DENY` variable and deploys that directory:
+
+- `ci/urls.py write`
+- `ci/schema.py write site`
+- `ci/tool-css.mjs`
+- `ci/vendor-esptool.sh`
+
+Every file the patterns don't match is served, so a file that isn't meant to be public
 belongs in `DENY`. `ci/check-pages.mjs` fails the workflow when a published
 page or script refers to a local file that isn't published.
 
@@ -82,7 +87,6 @@ in `ci/python-version`, which `ci/install-python.sh` installs into `build/`.
 
 Release files are published in images.airfrog.org's own repository, at the
 paths `urls.toml` defines. Published files are never changed.
-`airfrog-v2/docs/ac3-design.md` section 3 specifies the manifests.
 
 | Entry | Contents | Published by |
 |---|---|---|
@@ -105,23 +109,87 @@ with `ci/release.sh`, then added to its manifest with
 `ci/release-firmware.py`. `ci/promote-firmware.py` makes a listed release the
 latest of its firmware. `ci/release-ui.py`
 publishes the full user interface and writes the UI manifest.
-`ci/release-airfrog.py` writes the Airfrog manifest, which contains the
-addresses of the other manifests and of the client
-library's published versions. The Airfrog home page fetches
-it from `https://meta.piers.rocks/airfrog/manifest.json`, the address built into
-the firmware. Client library versions
-are independent of firmware releases.
+`ci/release-airfrog.py` writes the Airfrog manifest, which contains:
+
+- the address and key of each other manifest
+- the address of the client library's published versions
+- `full_access_websites`, the websites whose extension UIs have every request
+  forwarded by the Airfrog full user interface
+
+The Airfrog home page fetches it from `AIRFROG_MANIFEST` in
+`commissioning/release-keys.js`, the address built into the firmware. Client
+library versions are independent of firmware releases.
+
+```json
+{
+  "type": "airfrog",
+  "version": 1,
+  "ui_manifest": { "url": "https://images.airfrog.org/ui/manifest.json", "key": "<64 hex digits>" },
+  "firmware_manifest": { "url": "https://images.airfrog.org/firmware/manifest.json", "key": "<64 hex digits>" },
+  "support_firmware_manifest": { "url": "https://images.airfrog.org/support-firmware/manifest.json", "key": "<64 hex digits>" },
+  "cli_manifest": { "url": "https://images.airfrog.org/cli/manifest.json", "key": "<64 hex digits>" },
+  "extensions_manifest": { "url": "https://extensions.airfrog.org/manifest.json", "key": "<64 hex digits>" },
+  "js_library": "https://images.airfrog.org/js/",
+  "full_access_websites": ["https://airfrog.org"]
+}
+```
+
+A manifest whose entry has a `key` is signed with that key. One without is
+read only from an https address and isn't checked further.
 
 The `airfrog` CLI's release files are on GitHub, at `CLI_RELEASE_FILE`.
 `ci/release-cli.py` adds a release to the CLI manifest and `ci/promote-cli.py`
 makes a listed release the latest of each architecture.
 
-Each manifest is signed with the manifest key, as `manifest.json.minisig`
-beside it. `commissioning/manifest-key.js` contains the key's public half,
-which verifies the manifests the Airfrog full user interface,
-airfrog.org/commissioning and airfrog.org/cli read, and the Airfrog manifest's address. The
-release scripts fail when the signing server's key differs. `ci/release-ui.py`
-also fails when `build/ui/ui.js` doesn't contain the key.
+Each manifest is signed with the release key, as `manifest.json.minisig`
+beside it. `commissioning/release-keys.js` contains:
+
+- `RELEASE_KEYS`, the release keys' public halves in hex, the release key first
+- `AIRFROG_MANIFEST`, the Airfrog manifest's address
+
+These verify the Airfrog manifest with any of the keys:
+
+- the Airfrog full user interface
+- airfrog.org/commissioning
+- airfrog.org/cli
+
+`ci/schema.py` writes the keys into the firmware and the `airfrog` CLI. The
+release scripts fail when the signing
+server's key isn't one of them. `ci/release-ui.py` also fails when
+`build/ui/ui.js`'s keys and address aren't exactly these.
+
+`ci/build-ui.sh` reads the environment variables `AIRFROG_MANIFEST` and
+`AIRFROG_KEYS` (hex keys separated by commas) in place of
+`commissioning/release-keys.js`'s, and fails when two keys have the same key
+ID, their first 8 bytes.
+
+Firmware and extension images are published as signed files. A signed file
+is:
+
+- the image
+- 0 to 3 zero bytes to a 4-byte boundary
+- `AFSG`
+- the image's 74-byte minisign legacy Ed25519 signature
+
+The firmware and extensions manifests list each
+signed file's size and SHA-256. A firmware image's end is found from its
+segment headers and an extension image's from its `AFXI` header.
+`ci/release-firmware.py` fails when `FIRMWARE_UPDATE_IMAGE` isn't signed with
+a release key. `ci/release-extensions.py` signs each unsigned extension image
+in the Airfrog Extension Repository before signing its list.
+
+`ci/signing.py` signs one image through the signing server and writes its
+signed file. airfrog-v2's `ci/release.sh` uses it for firmware:
+
+```bash
+"$(ci/install-python.sh)/python3" ci/signing.py sign-firmware IMAGE --out FILE --signer URL
+```
+
+`sign-extension` signs an extension image.
+
+`ci/releases.py` contains the code that writes the Airfrog manifest
+and signs the extension images and their list, which the release scripts and
+`ci/dev.py` use.
 
 `commission.json` lists a model's factory files with their flash offsets,
 for `ci/release-firmware.py` and `ci/test-esp-rom.sh` in airfrog-v2.
@@ -144,11 +212,11 @@ The commissioning tool below the page's text writes Airfrog's firmware with
 esptool-js over Web Serial, then sends Airfrog's settings over serial as `@af `
 lines with the Airfrog internal JS setup module from the release Airfrog runs.
 `ci/tool-css.mjs` writes the tool's stylesheet, `commissioning/tool.css`, from
-the setup module's stylesheet. See section 2 of
-`airfrog-v2/docs/ac3-design.md` and "Over serial" in
-`airfrog-v2/docs/websocket-protocol.md`.
+the setup module's stylesheet. "Over serial" in
+`airfrog-v2/docs/websocket-protocol.md` defines the messages.
 
-`commissioning/vendor/esptool.js` is built from the pinned npm packages by:
+`commissioning/vendor/esptool.js` isn't committed. It is built from the
+pinned npm packages by:
 
 ```bash
 ci/vendor-esptool.sh
@@ -156,6 +224,19 @@ ci/vendor-esptool.sh
 
 The versions of esptool-js, pako, atob-lite, esbuild and Node.js are in
 `ci/<name>-version`. The script installs the pinned Node.js into `build/`.
+
+## Developer builds
+
+airfrog-v2's `DEVELOPING.md` is the guide to building your own Airfrog
+software and testing it on an Airfrog.
+
+`ci/dev.py keys` makes a developer key in `build/dev/keys/`. `ci/dev.py
+serve` serves these, signed with the developer key:
+
+- the manifests
+- the firmware
+- the Airfrog UI
+- the extensions
 
 ## Testing
 
@@ -175,6 +256,25 @@ node tests/js/chrome/models.test.mjs
 The Airfrog internal JS setup module over serial is tested by
 `tests/js/chrome/setup-serial.test.mjs`.
 
+`tests/js/chrome/interfaces.test.mjs` tests what each interface allows in the
+Airfrog setup and the Airfrog full user interface, in headless Chrome against
+a stand-in Airfrog. Run `ci/test-deps.sh` first.
+
+`tests/js/chrome/phone-speed.test.mjs` runs these with the CPU throttled until
+PBKDF2 takes longer than Airfrog's 5 s login limit:
+
+- first setup
+- the password reset
+- the login
+
+It runs against the stand-in Airfrog, or with `QEMU=ADDRESS:PORT` against
+Airfrog in QEMU.
+
+`tests/signing_test.py` tests `ci/signing.py` and the release scripts' signing
+against a stand-in signing server, and `tests/dev_test.py` tests `ci/dev.py`.
+`tests/js/run.sh` runs both. The signing tests' Ed25519 keys are made once in
+`build/test-keys/`.
+
 airfrog.org/web is tested in headless Chrome, with a stand-in Airfrog, by:
 
 ```bash
@@ -187,6 +287,16 @@ checkout:
 
 ```bash
 AIRFROG_V2=../airfrog-v2 node tests/js/chrome/bridge-qemu.test.mjs ADDRESS:PORT
+```
+
+`tests/js/chrome/qemu-security.test.mjs` runs the Airfrog setup and the Airfrog
+full user interface over each interface against Mini in QEMU
+(`ci/qemu.sh --serve mini`) with the QEMU build's test keys. Run
+`ci/build-setup.sh` and `ci/build-ui.sh` first. Its header lists its ports and
+options:
+
+```bash
+AIRFROG_V2=../airfrog-v2 node tests/js/chrome/qemu-security.test.mjs 127.0.0.1:18080
 ```
 
 `tests/commissioning/provision.mjs` sends settings over TCP to Airfrog's serial
