@@ -2140,6 +2140,10 @@ RESULT_TOO_LARGE = { value = 5, type = "u8" }
 RESULT_ONEROM_UNREADABLE = { value = 6, type = "u8" }
 RESULT_WRITE_FAILED = { value = 7, type = "u8" }
 RESULT_ERASE_FAILED = { value = 8, type = "u8" }
+RESULT_HEADER_INVALID = { value = 9, type = "u8" }
+ONEROM_NOT_ACKNOWLEDGED = { value = 0x80, type = "u8", hex = true, comment = "One ROM's result when Airfrog doesn't acknowledge the pattern." }
+ONEROM_NOT_READ = { value = 0x81, type = "u8", hex = true, comment = "One ROM's result when Airfrog acknowledges the pattern but doesn't read the request." }
+ONEROM_STOPPED = { value = 0x82, type = "u8", hex = true, comment = "One ROM's result when Airfrog stops before writing a result." }
 RECOVERY_FIRMWARE = { value = "onerom-airfrog-recovery", type = "str", support_firmware = true, comment = "The recovery firmware's key in the support firmware manifest." }
 SERIAL_FIRMWARE = { value = "onerom-airfrog-serial-recovery", type = "str", support_firmware = true, comment = "The serial firmware's key in the support firmware manifest." }
 PICO_FIRMWARE = { value = "pico-airfrog-serial-adapter", type = "str", c = false, support_firmware = true, comment = "The Pico's serial adapter firmware's key in the support firmware manifest." }
@@ -2524,6 +2528,10 @@ IMAGE_TOO_LARGE = "image too large"
 ONEROM_UNREADABLE = "One ROM flash not readable"
 WRITE_FAILED = "Airfrog flash write failed"
 ERASE_FAILED_REASON = "Airfrog flash erase failed"
+HEADER_INVALID = "request header not valid"
+NOT_ACKNOWLEDGED = "no response from Airfrog. Its recovery setting may be off, or an earlier erase may have run and turned it off"
+NOT_READ = "Airfrog didn't read the request"
+STOPPED = "Airfrog stopped before writing a result"
 UNKNOWN_CODE = { args = ["code"], rust_args = ["u32"], text = "unknown error code {code}" }
 NOT_RUN = { comment = "The request's magic is still in One ROM's flash.", text = "no response from Airfrog" }
 RESTORING = { args = ["dir"], rust_args = ["&str"], text = "Restoring One ROM from {dir}..." }
